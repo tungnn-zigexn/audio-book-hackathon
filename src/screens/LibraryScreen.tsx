@@ -60,7 +60,9 @@ export default function LibraryScreen({ onSelectBook }: { onSelectBook: () => vo
         <View style={styles.container}>
             <View style={styles.header}>
                 <View style={styles.headerTop}>
-                    <Text style={styles.title}>Thư viện</Text>
+                    <TouchableOpacity onLongPress={() => databaseService.shareDatabase()}>
+                        <Text style={styles.title}>Thư viện</Text>
+                    </TouchableOpacity>
                     <TouchableOpacity onPress={handleReset}>
                         <Trash2 color={Colors.textSecondary} size={24} />
                     </TouchableOpacity>

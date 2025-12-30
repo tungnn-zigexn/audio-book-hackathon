@@ -2,22 +2,28 @@ import * as Speech from 'expo-speech';
 import { Audio } from 'expo-av';
 import { Platform } from 'react-native';
 import { openAIService, OpenAIVoice } from './OpenAIService';
+import { databaseService } from './DatabaseService';
 
 class AudioService {
     private sound: Audio.Sound | null = null;
-    
+
     // AI Voice features
     private isPlayingAI = false;
     private isPaused = false;
     private currentAIVoice: OpenAIVoice | null = null;
     private lastPositionMillis: number = 0;
-    private prefetchMap: Map<number, string> = new Map();
+    private lastChapterId: number | null = null;
+    private prefetchMap: Map<string, string> = new Map();
+    private fetchingPromises: Map<string, Promise<string | undefined>> = new Map();
+    private preferredVoices: OpenAIVoice[] = ['alloy', 'shimmer', 'nova', 'echo', 'onyx'];
 
     // Speed control features
     private currentRate: number = 1.0; // Tốc độ hiện tại (0.25 - 2.0)
     private isPlaying: boolean = false;
     private currentLanguage: 'en' | 'vi' = 'vi';
     private currentText: string = '';
+    private currentIndex: number = 0;
+    private currentOnChunkStart?: (index: number, total: number, chunks: string[]) => void;
 
     async speak(
         text: string,
@@ -32,7 +38,9 @@ class AudioService {
             this.currentRate = speechRate;
             this.currentLanguage = language;
             this.currentText = text;
-            
+            this.currentIndex = startIndex;
+            this.currentOnChunkStart = onChunkStart;
+
             console.log(`[AudioService] Using Local System TTS for ${language} at rate ${speechRate} from chunk ${startIndex}`);
 
             // 1. Set audio mode for playback
@@ -75,7 +83,7 @@ class AudioService {
                         // iOS thường dùng 'vi-VN', Android có thể dùng 'vi'
                         langCode = 'vi-VN'; // iOS thường cần 'vi-VN'
                     }
-                    
+
                     console.log(`[AudioService] Using language code: ${langCode} for language: ${language}`);
 
                     Speech.speak(chunk, {
@@ -88,6 +96,7 @@ class AudioService {
                         },
                         onDone: () => {
                             currentChunkIndex++;
+                            this.currentIndex = currentChunkIndex;
                             speakNext();
                         },
                         onStopped: () => {
@@ -99,7 +108,7 @@ class AudioService {
                             this.isPlaying = false;
                         }
                     });
-                    
+
                     this.isPlaying = true;
                 } else {
                     console.log('[AudioService] Finished reading all chunks');
@@ -143,6 +152,8 @@ class AudioService {
     }
 
     getIsPlaying(): boolean {
+        // AI Voice is active even if paused (session wise) but we want to reflect ACTUALLY playing
+        if (this.isPaused) return false;
         return this.isPlaying || this.isPlayingAI;
     }
 
@@ -165,7 +176,8 @@ class AudioService {
         onChunkStart?: (index: number, total: number, chunks: string[]) => void,
         onProgress?: (msg: string) => void,
         startIndex: number = 0,
-        resumeMillis: number = 0
+        resumeMillis: number = 0,
+        chapterId?: number
     ) {
         try {
             // If we are already paused on this session AND it's the same voice, just resume!
@@ -175,17 +187,22 @@ class AudioService {
                 return;
             }
 
-            // If voice changed, clear cache to avoid using old voice audio
-            if (this.currentAIVoice && this.currentAIVoice !== voice) {
-                console.log(`[AudioService] Voice changed from ${this.currentAIVoice} to ${voice}, clearing cache`);
+            // Clear cache ONLY if chapter changed or text changed significantly
+            if (chapterId && this.lastChapterId !== chapterId) {
+                console.log(`[AudioService] Chapter changed from ${this.lastChapterId} to ${chapterId}, clearing cache`);
+                this.prefetchMap.clear();
+                this.lastChapterId = chapterId;
+            } else if (!chapterId && text !== this.currentText) {
+                console.log('[AudioService] Text changed without chapterId, clearing cache');
                 this.prefetchMap.clear();
             }
 
             await this.stop();
             // Wait a bit to ensure audio is fully stopped
             await new Promise(resolve => setTimeout(resolve, 100));
-            
+
             this.isPlayingAI = true;
+            this.isPlaying = true;
             this.isPaused = false;
             this.currentAIVoice = voice;
 
@@ -201,16 +218,70 @@ class AudioService {
             const chunks = this.chunkText(text, 500);
             let currentIdx = startIndex;
 
-            const prefetchNext = async (idx: number) => {
-                if (idx < chunks.length && !this.prefetchMap.has(idx) && this.isPlayingAI) {
-                    try {
-                        console.log(`[AudioService] Pre-fetching chunk ${idx + 1}`);
-                        const uri = await openAIService.synthesizeSpeech(chunks[idx], voice);
-                        this.prefetchMap.set(idx, uri);
-                    } catch (e) {
-                        console.error('[AudioService] Pre-fetch failed for', idx, e);
-                    }
+            const fetchVoiceChunk = async (idx: number, v: OpenAIVoice): Promise<string | undefined> => {
+                const key = `${v}_${idx}`;
+                if (this.prefetchMap.has(key)) {
+                    console.log(`[AudioService] [STEP 1: Memory Cache] HIT for ${key}`);
+                    return this.prefetchMap.get(key);
                 }
+
+                // Deduplicate ongoing requests
+                if (this.fetchingPromises.has(key)) {
+                    // console.log(`[AudioService] Joining existing fetch for ${key}`);
+                    return this.fetchingPromises.get(key);
+                }
+
+                const fetchPromise = (async () => {
+                    try {
+                        // 1. Check persistent DB cache first
+                        if (chapterId) {
+                            const cachedUri = await databaseService.getCachedAudio(chapterId, idx, v);
+                            if (cachedUri) {
+                                console.log(`[AudioService] [STEP 2: DB Cache] HIT for ${key}`);
+                                this.prefetchMap.set(key, cachedUri);
+                                return cachedUri;
+                            }
+                        }
+
+                        // 2. API Fetch
+                        console.log(`[AudioService] [STEP 3: API Request] Missing for ${key}, calling OpenAI...`);
+                        const uri = await openAIService.synthesizeSpeech(chunks[idx], v);
+                        this.prefetchMap.set(key, uri); // Temporary save to memory cache
+
+                        // 3. Persist to DB (limited by 2-voice-per-chunk rule in DatabaseService)
+                        if (chapterId) {
+                            const savedUri = await databaseService.saveCachedAudio(chapterId, idx, v, uri);
+                            if (savedUri) {
+                                this.prefetchMap.set(key, savedUri);
+                            }
+                        }
+                        return this.prefetchMap.get(key) || uri;
+                    } catch (e) {
+                        console.error(`[AudioService] Fetch failed for ${key}`, e);
+                        return undefined;
+                    } finally {
+                        this.fetchingPromises.delete(key);
+                    }
+                })();
+
+                this.fetchingPromises.set(key, fetchPromise);
+                return fetchPromise;
+            };
+
+            const prefetchNext = async (idx: number) => {
+                if (!this.isPlayingAI) return;
+
+                // Priority 1: Current Voice for target index
+                if (idx < chunks.length) fetchVoiceChunk(idx, voice);
+
+                // Priority 2: Alternate voices for current and target index
+                const currentIdx = idx - 1;
+                this.preferredVoices.forEach(v => {
+                    if (v !== voice) {
+                        if (currentIdx >= 0 && currentIdx < chunks.length) fetchVoiceChunk(currentIdx, v);
+                        if (idx < chunks.length) fetchVoiceChunk(idx, v);
+                    }
+                });
             };
 
             const playNextAIChunk = async () => {
@@ -220,13 +291,13 @@ class AudioService {
                     if (onProgress) onProgress(`Đang tải đoạn ${currentIdx + 1}/${chunks.length}...`);
                     if (onChunkStart) onChunkStart(currentIdx, chunks.length, chunks);
 
-                    let audioUri = this.prefetchMap.get(currentIdx);
+                    const key = `${voice}_${currentIdx}`;
+                    let audioUri = this.prefetchMap.get(key);
                     if (!audioUri) {
-                        console.log(`[AudioService] Cache miss for chunk ${currentIdx + 1}, fetching now...`);
-                        audioUri = await openAIService.synthesizeSpeech(chunks[currentIdx], voice);
-                        this.prefetchMap.set(currentIdx, audioUri);
+                        console.log(`[AudioService] Cache miss for ${key}, searching...`);
+                        audioUri = await fetchVoiceChunk(currentIdx, voice);
                     } else {
-                        console.log(`[AudioService] Cache HIT for chunk ${currentIdx + 1}`);
+                        console.log(`[AudioService] Memory cache HIT for ${key}`);
                     }
 
                     if (!this.isPlayingAI) return;
@@ -276,16 +347,23 @@ class AudioService {
                     console.log('[AudioService] AI Playback finished');
                     if (onProgress) onProgress('');
                     this.isPlayingAI = false;
+                    this.isPlaying = false;
                 }
             };
 
-            // Initial prefetch for next chunk
-            prefetchNext(startIndex + 1);
+            // Initial prefetch: specifically fetch ALL preferred voices for current chunk
+            // and the main voice for the next chunk
+            this.preferredVoices.forEach(v => {
+                fetchVoiceChunk(startIndex, v);
+            });
+            fetchVoiceChunk(startIndex + 1, voice);
+
             await playNextAIChunk();
         } catch (error) {
             console.error('[AudioService] OpenAI TTS error:', error);
             if (onProgress) onProgress('Lỗi khi nạp giọng đọc AI.');
             this.isPlayingAI = false;
+            this.isPlaying = false;
         }
     }
 
@@ -350,9 +428,11 @@ class AudioService {
             if (Platform.OS === 'ios') {
                 await Speech.resume();
                 this.isPlaying = true;
+            } else if (Platform.OS === 'android' && !this.sound && this.currentText) {
+                // On Android, system Speech doesn't support resume. Restart from current index.
+                console.log(`[AudioService] Android Local Resume: Restarting from chunk ${this.currentIndex}`);
+                await this.speak(this.currentText, this.currentLanguage, this.currentOnChunkStart, this.currentIndex);
             }
-            // On Android, we don't have a good way to resume native speech midway,
-            // but OpenAI TTS (this.sound) works perfectly.
         } catch (error) {
             console.error('[AudioService] Resume error:', error);
         }
@@ -375,7 +455,7 @@ class AudioService {
         this.isPlayingAI = false;
         this.isPaused = false;
         this.currentAIVoice = null;
-        this.prefetchMap.clear();
+        // NOTE: We no longer clear prefetchMap here to allow voice-switching to be instant
         try {
             console.log('[AudioService] Stopping speech...');
             if (this.sound) {

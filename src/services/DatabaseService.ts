@@ -1,5 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
+import { Buffer } from 'buffer';
 
 export interface Book {
     id: number;
@@ -54,11 +56,14 @@ class DatabaseService {
             if (tables.some(t => t.name === 'books')) {
                 const count = await database.getFirstAsync<{c: number}>('SELECT COUNT(*) as c FROM books');
                 console.log(`[DatabaseService] Current books count: ${count?.c}`);
-                if (count?.c === 0) {
-                     // Try a direct query to see if the table is truly empty
-                     const raw = await database.getAllAsync('SELECT * FROM books');
-                     console.log(`[DatabaseService] Raw books check count: ${raw.length}`);
-                }
+            }
+
+            // Migration: If audio_cache still uses file_uri, it's not portable.
+            // We drop it once to force the new BLOB-based schema.
+            const audioCacheInfo = await database.getAllAsync<{name: string}>("PRAGMA table_info(audio_cache)");
+            if (audioCacheInfo.some(col => col.name === 'file_uri')) {
+                console.log('[DatabaseService] Migrating audio_cache: dropping old file_uri table...');
+                await database.execAsync('DROP TABLE audio_cache');
             }
 
             await database.execAsync(`
@@ -80,6 +85,15 @@ class DatabaseService {
                     order_index INTEGER,
                     FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE
                 );
+                CREATE TABLE IF NOT EXISTS audio_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chapter_id INTEGER,
+                    chunk_index INTEGER,
+                    voice TEXT,
+                    data BLOB,
+                    FOREIGN KEY (chapter_id) REFERENCES chapters (id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_audio_cache_lookup ON audio_cache (chapter_id, chunk_index, voice);
             `);
 
             // Final check after schema ensure
@@ -153,6 +167,92 @@ class DatabaseService {
         );
     }
 
+    /**
+     * Get cached audio URI if exists
+     */
+    async getCachedAudio(chapterId: number, chunkIndex: number, voice: string): Promise<string | null> {
+        await this.init();
+        const row = await this.db!.getFirstAsync<{data: Uint8Array}>(
+            'SELECT data FROM audio_cache WHERE chapter_id = ? AND chunk_index = ? AND voice = ?',
+            [chapterId, chunkIndex, voice]
+        );
+
+        if (row && row.data) {
+            try {
+                // To play audio, expo-av needs a file URI.
+                // We extract the BLOB to a temporary cache file.
+                const tempDir = FileSystem.cacheDirectory + 'audio_temp/';
+                const dirInfo = await FileSystem.getInfoAsync(tempDir);
+                if (!dirInfo.exists) {
+                    await FileSystem.makeDirectoryAsync(tempDir, { intermediates: true });
+                }
+
+                const tempFile = tempDir + `${chapterId}_${chunkIndex}_${voice}.mp3`;
+                const base64 = Buffer.from(row.data).toString('base64');
+                await FileSystem.writeAsStringAsync(tempFile, base64, { encoding: FileSystem.EncodingType.Base64 });
+
+                return tempFile;
+            } catch (e) {
+                console.error('[DatabaseService] Failed to extract audio BLOB to temp file:', e);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Save audio to persistent cache (SQLite + Document Directory)
+     * Limit to 2 voices per chunk
+     */
+    async saveCachedAudio(chapterId: number, chunkIndex: number, voice: string, sourceUri: string): Promise<string | null> {
+        await this.init();
+
+        try {
+            // 1. Check current voice count for this chunk
+            const countRow = await this.db!.getFirstAsync<{c: number}>(
+                'SELECT COUNT(DISTINCT voice) as c FROM audio_cache WHERE chapter_id = ? AND chunk_index = ?',
+                [chapterId, chunkIndex]
+            );
+
+            const voiceCount = countRow?.c || 0;
+
+            // 2. If already have 2 different voices AND this is a NEW voice, don't persist
+            const existingVoice = await this.db!.getFirstAsync(
+                'SELECT id FROM audio_cache WHERE chapter_id = ? AND chunk_index = ? AND voice = ?',
+                [chapterId, chunkIndex, voice]
+            );
+
+            if (voiceCount >= 2 && !existingVoice) {
+                console.log(`[DatabaseService] Cache quota reached for chapter ${chapterId} chunk ${chunkIndex}. Not persisting third voice.`);
+                return null;
+            }
+
+            // 3. Read audio file as binary
+            const base64 = await FileSystem.readAsStringAsync(sourceUri, { encoding: FileSystem.EncodingType.Base64 });
+            const binaryData = new Uint8Array(Buffer.from(base64, 'base64'));
+
+            // 4. Update DB (store BLOB directly)
+            if (existingVoice) {
+                await this.db!.runAsync(
+                    'UPDATE audio_cache SET data = ? WHERE chapter_id = ? AND chunk_index = ? AND voice = ?',
+                    [binaryData, chapterId, chunkIndex, voice]
+                );
+            } else {
+                await this.db!.runAsync(
+                    'INSERT INTO audio_cache (chapter_id, chunk_index, voice, data) VALUES (?, ?, ?, ?)',
+                    [chapterId, chunkIndex, voice, binaryData]
+                );
+            }
+
+            console.log(`[DatabaseService] Saved audio BLOB to DB: ch${chapterId}_idx${chunkIndex}_${voice} (${binaryData.length} bytes)`);
+
+            // Return the original URI so the player can continue playing without waiting for a re-extraction
+            return sourceUri;
+        } catch (error) {
+            console.error('[DatabaseService] saveCachedAudio failed:', error);
+            return null;
+        }
+    }
+
     async clearBooks() {
         await this.close();
 
@@ -179,6 +279,39 @@ class DatabaseService {
             await SQLite.deleteDatabaseAsync('audiobook_v2.db');
             console.log('[DatabaseService] deleteDatabaseAsync audiobook_v2.db completed');
         } catch (e) {}
+    }
+
+    /**
+     * VACUUM the database to reduce size and prepare for export
+     */
+    async vacuumAndExport(): Promise<string> {
+        await this.init();
+        console.log('[DatabaseService] Vacuuming database...');
+        await this.db!.execAsync('VACUUM;');
+
+        const dbPath = FileSystem.documentDirectory + 'SQLite/audiobook_v2.db';
+        console.log(`[DatabaseService] Database ready for export at: ${dbPath}`);
+        return dbPath;
+    }
+
+    /**
+     * Share the database file using the system share sheet
+     */
+    async shareDatabase(): Promise<void> {
+        try {
+            const dbPath = await this.vacuumAndExport();
+            if (!(await Sharing.isAvailableAsync())) {
+                throw new Error('Chia sẻ không khả dụng trên thiết bị này');
+            }
+            await Sharing.shareAsync(dbPath, {
+                mimeType: 'application/x-sqlite3',
+                dialogTitle: 'Xuất Database Audiobook',
+                UTI: 'public.database'
+            });
+        } catch (error: any) {
+            console.error('[DatabaseService] Export failed:', error);
+            throw error;
+        }
     }
 }
 
