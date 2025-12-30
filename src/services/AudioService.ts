@@ -5,48 +5,157 @@ import { openAIService, OpenAIVoice } from './OpenAIService';
 
 class AudioService {
     private sound: Audio.Sound | null = null;
+    
+    // AI Voice features
     private isPlayingAI = false;
     private isPaused = false;
     private currentAIVoice: OpenAIVoice | null = null;
     private lastPositionMillis: number = 0;
-
     private prefetchMap: Map<number, string> = new Map();
+
+    // Speed control features
+    private currentRate: number = 1.0; // Tốc độ hiện tại (0.25 - 2.0)
+    private isPlaying: boolean = false;
+    private currentLanguage: 'en' | 'vi' = 'vi';
+    private currentText: string = '';
 
     async speak(
         text: string,
         language: 'en' | 'vi',
         onChunkStart?: (index: number, total: number, chunks: string[]) => void,
-        startIndex: number = 0
+        startIndex: number = 0,
+        rate?: number
     ) {
         this.isPlayingAI = false;
         try {
-            console.log(`[AudioService] Using Local System TTS for ${language} from chunk ${startIndex}`);
+            const speechRate = rate ?? this.currentRate;
+            this.currentRate = speechRate;
+            this.currentLanguage = language;
+            this.currentText = text;
+            
+            console.log(`[AudioService] Using Local System TTS for ${language} at rate ${speechRate} from chunk ${startIndex}`);
+
+            // 1. Set audio mode for playback
+            await Audio.setAudioModeAsync({
+                allowsRecordingIOS: false,
+                playsInSilentModeIOS: true,
+                staysActiveInBackground: false,
+                shouldDuckAndroid: true,
+            });
+
+            // 2. Stop any existing playback
             await this.stop();
 
+            // 3. Split text into chunks
             const chunks = this.chunkText(text, 300);
             let currentChunkIndex = startIndex;
 
             const speakNext = () => {
                 if (currentChunkIndex < chunks.length && !this.isPlayingAI) {
                     const chunk = chunks[currentChunkIndex];
-                    if (onChunkStart) onChunkStart(currentChunkIndex, chunks.length, chunks);
+                    if (onChunkStart) {
+                        onChunkStart(currentChunkIndex, chunks.length, chunks);
+                    }
+
+                    // Set audio mode before speaking (non-blocking)
+                    Audio.setAudioModeAsync({
+                        allowsRecordingIOS: false,
+                        playsInSilentModeIOS: true,
+                        staysActiveInBackground: false,
+                        shouldDuckAndroid: true,
+                    }).catch(e => {
+                        console.warn('[AudioService] Audio mode set warning:', e);
+                    });
+
+                    // Determine language code - thử nhiều options cho tiếng Việt
+                    let langCode: string;
+                    if (language === 'en') {
+                        langCode = 'en-US';
+                    } else {
+                        // iOS thường dùng 'vi-VN', Android có thể dùng 'vi'
+                        langCode = 'vi-VN'; // iOS thường cần 'vi-VN'
+                    }
+                    
+                    console.log(`[AudioService] Using language code: ${langCode} for language: ${language}`);
 
                     Speech.speak(chunk, {
-                        language: language === 'en' ? 'en-US' : 'vi-VN',
+                        language: langCode,
                         pitch: 1.0,
-                        rate: 1.0,
+                        rate: speechRate,
+                        volume: 1.0, // Đảm bảo volume tối đa
+                        onStart: () => {
+                            console.log(`[AudioService] Speaking chunk ${currentChunkIndex + 1}/${chunks.length} with language ${langCode}`);
+                        },
                         onDone: () => {
                             currentChunkIndex++;
                             speakNext();
                         },
-                        onStopped: () => console.log('[AudioService] Speech stopped'),
-                        onError: (error) => console.error('[AudioService] Speech Error:', error)
+                        onStopped: () => {
+                            console.log('[AudioService] Speech stopped');
+                            this.isPlaying = false;
+                        },
+                        onError: (error) => {
+                            console.error('[AudioService] Speech Error:', error);
+                            this.isPlaying = false;
+                        }
                     });
+                    
+                    this.isPlaying = true;
+                } else {
+                    console.log('[AudioService] Finished reading all chunks');
+                    this.isPlaying = false;
                 }
             };
+
+            // 4. Start first chunk
             speakNext();
         } catch (error) {
             console.error('[AudioService] TTS error:', error);
+            this.isPlaying = false;
+        }
+    }
+
+    /**
+     * Thay đổi tốc độ đọc
+     */
+    setRate(rate: number) {
+        // Clamp rate between 0.25 and 2.0
+        this.currentRate = Math.max(0.25, Math.min(2.0, rate));
+        console.log(`[AudioService] Rate set to: ${this.currentRate}`);
+    }
+
+    /**
+     * Tăng tốc độ
+     */
+    increaseRate(step: number = 0.25) {
+        this.setRate(this.currentRate + step);
+    }
+
+    /**
+     * Giảm tốc độ
+     */
+    decreaseRate(step: number = 0.25) {
+        this.setRate(this.currentRate - step);
+    }
+
+    getRate(): number {
+        return this.currentRate;
+    }
+
+    getIsPlaying(): boolean {
+        return this.isPlaying || this.isPlayingAI;
+    }
+
+    /**
+     * Restart với tốc độ mới
+     */
+    async restartWithNewRate(onChunkStart?: (index: number, total: number, chunks: string[]) => void, startIndex: number = 0) {
+        if (this.currentText && !this.isPlayingAI) {
+            const wasPlaying = this.isPlaying;
+            await this.stop();
+            if (wasPlaying) {
+                await this.speak(this.currentText, this.currentLanguage, onChunkStart, startIndex, this.currentRate);
+            }
         }
     }
 
@@ -66,7 +175,16 @@ class AudioService {
                 return;
             }
 
+            // If voice changed, clear cache to avoid using old voice audio
+            if (this.currentAIVoice && this.currentAIVoice !== voice) {
+                console.log(`[AudioService] Voice changed from ${this.currentAIVoice} to ${voice}, clearing cache`);
+                this.prefetchMap.clear();
+            }
+
             await this.stop();
+            // Wait a bit to ensure audio is fully stopped
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
             this.isPlayingAI = true;
             this.isPaused = false;
             this.currentAIVoice = voice;
@@ -142,7 +260,6 @@ class AudioService {
                         if (status.isLoaded) {
                             if (status.positionMillis !== undefined) {
                                 this.lastPositionMillis = status.positionMillis;
-                                // Debug: console.log(`[AudioService] Current pos: ${this.lastPositionMillis}`);
                             }
 
                             if (status.didJustFinish) {
@@ -215,8 +332,10 @@ class AudioService {
                     await Speech.stop();
                 }
             }
+            this.isPlaying = false;
         } catch (error) {
             console.error('[AudioService] Pause error:', error);
+            this.isPlaying = false;
         }
     }
 
@@ -226,9 +345,11 @@ class AudioService {
         try {
             if (this.sound) {
                 await this.sound.playAsync();
+                this.isPlaying = true;
             }
             if (Platform.OS === 'ios') {
                 await Speech.resume();
+                this.isPlaying = true;
             }
             // On Android, we don't have a good way to resume native speech midway,
             // but OpenAI TTS (this.sound) works perfectly.
@@ -256,14 +377,25 @@ class AudioService {
         this.currentAIVoice = null;
         this.prefetchMap.clear();
         try {
+            console.log('[AudioService] Stopping speech...');
             if (this.sound) {
                 await this.sound.stopAsync();
                 await this.sound.unloadAsync();
                 this.sound = null;
             }
+            // Stop tất cả speech đang phát
             await Speech.stop();
+            this.isPlaying = false;
+            console.log('[AudioService] Speech stopped successfully');
         } catch (error) {
             console.error('[AudioService] Stop error:', error);
+            this.isPlaying = false;
+            // Force stop nếu có lỗi
+            try {
+                await Speech.stop();
+            } catch (e) {
+                console.error('[AudioService] Force stop error:', e);
+            }
         }
     }
 }

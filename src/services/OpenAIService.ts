@@ -1,20 +1,26 @@
 import axios from 'axios';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Buffer } from 'buffer';
-
-const OPENAI_API_KEY = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+import { OPENAI_API_KEY } from '../constants/config';
 
 export type OpenAIVoice = 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer';
 
 class OpenAIService {
     private baseUrl = 'https://api.openai.com/v1';
+    private readonly TTS_URL = 'https://api.openai.com/v1/audio/speech';
+    private readonly WHISPER_URL = 'https://api.openai.com/v1/audio/transcriptions';
+    private readonly CHAT_URL = 'https://api.openai.com/v1/chat/completions';
 
     /**
-     * Synthesize speech using OpenAI TTS
+     * Synthesize speech using OpenAI TTS (for AI voice feature)
      * Returns a local URI to the audio file
      */
     async synthesizeSpeech(text: string, voice: OpenAIVoice = 'alloy'): Promise<string> {
         try {
+            if (!OPENAI_API_KEY) {
+                throw new Error('OpenAI API key not configured');
+            }
+
             console.log(`[OpenAIService] Sending request to OpenAI TTS... (Text length: ${text.length})`);
 
             const response = await axios.post(
@@ -55,35 +61,84 @@ class OpenAIService {
     }
 
     /**
+     * Legacy method - kept for compatibility
+     */
+    async textToSpeech(text: string, voice: OpenAIVoice = 'alloy') {
+        return this.synthesizeSpeech(text, voice);
+    }
+
+    /**
      * Transcribe audio using Whisper
      */
     async transcribeAudio(fileUri: string): Promise<string> {
         try {
-            console.log('[OpenAIService] Transcribing audio...');
+            if (!OPENAI_API_KEY) {
+                throw new Error('OpenAI API key not configured');
+            }
+
+            console.log('[OpenAIService] Transcribing with Whisper...');
+            const fileInfo = await FileSystem.getInfoAsync(fileUri);
+            if (!fileInfo.exists) {
+                throw new Error('File does not exist for transcription');
+            }
 
             const formData = new FormData();
             formData.append('file', {
                 uri: fileUri,
-                name: 'audio.m4a',
+                name: 'recording.m4a',
                 type: 'audio/m4a',
             } as any);
             formData.append('model', 'whisper-1');
+            formData.append('language', 'vi'); // Tiếng Việt
+
+            const response = await axios.post(this.WHISPER_URL, formData, {
+                headers: {
+                    Authorization: `Bearer ${OPENAI_API_KEY}`,
+                    'Content-Type': 'multipart/form-data',
+                },
+            });
+
+            return response.data.text;
+        } catch (error: any) {
+            if (error.response?.status === 429) {
+                console.error('[OpenAIService] Whisper Quota Exceeded (429). Please check your OpenAI billing/limits.');
+            } else {
+                console.error('[OpenAIService] Whisper Error:', error.response?.data || error.message);
+            }
+            throw error;
+        }
+    }
+
+    async chatCompletion(messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>, options?: {
+        model?: string;
+        max_tokens?: number;
+        temperature?: number;
+    }): Promise<string> {
+        try {
+            if (!OPENAI_API_KEY) {
+                throw new Error('OpenAI API key not configured');
+            }
 
             const response = await axios.post(
-                `${this.baseUrl}/audio/transcriptions`,
-                formData,
+                this.CHAT_URL,
+                {
+                    model: options?.model || 'gpt-3.5-turbo',
+                    messages,
+                    max_tokens: options?.max_tokens || 500,
+                    temperature: options?.temperature || 0.7,
+                },
                 {
                     headers: {
-                        'Authorization': `Bearer ${OPENAI_API_KEY}`,
-                        'Content-Type': 'multipart/form-data',
+                        Authorization: `Bearer ${OPENAI_API_KEY}`,
+                        'Content-Type': 'application/json',
                     },
                 }
             );
 
-            return response.data.text;
+            return response.data.choices[0].message.content;
         } catch (error: any) {
-            console.error('[OpenAIService] Transcription Error:', error?.response?.data || error.message);
-            throw new Error('Failed to transcribe audio');
+            console.error('[OpenAIService] Chat Error:', error.response?.data || error.message);
+            throw error;
         }
     }
 }

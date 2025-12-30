@@ -1,12 +1,40 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, Image, ScrollView } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+    StyleSheet, 
+    Text, 
+    View, 
+    TouchableOpacity, 
+    Image, 
+    ScrollView, 
+    Modal, 
+    Animated,
+    ActivityIndicator,
+    Alert
+} from 'react-native';
 import { Colors, Spacing } from '../constants/theme';
-import { Play, Pause, SkipForward, SkipBack, ArrowLeft, Languages, BookOpen } from 'lucide-react-native';
+import { 
+    Play, 
+    Pause, 
+    SkipForward, 
+    SkipBack, 
+    ArrowLeft, 
+    Languages, 
+    BookOpen,
+    Mic,
+    Gauge,
+    FileText,
+    X,
+    ChevronUp,
+    ChevronDown,
+    Zap,
+    User
+} from 'lucide-react-native';
 import { useBookStore } from '../store/useBookStore';
 import { audioService } from '../services/AudioService';
 import { databaseService, Chapter } from '../services/DatabaseService';
 import { OpenAIVoice } from '../services/OpenAIService';
-import { Mic, Zap, User } from 'lucide-react-native';
+import { voiceCommandProcessor, VoiceCommand } from '../services/VoiceCommandProcessor';
+import { summarizationService } from '../services/SummarizationService';
 
 export default function PlayerScreen({ onBack }: { onBack: () => void }) {
     const { selectedBook } = useBookStore();
@@ -14,14 +42,27 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
     const [currentChapterIndex, setCurrentChapterIndex] = useState(selectedBook?.last_chapter_index || 0);
     const [isPlaying, setIsPlaying] = useState(false);
     const [language, setLanguage] = useState<'en' | 'vi'>('vi');
+    const [speechRate, setSpeechRate] = useState(1.0);
+
+    // AI Voice states
     const [useAIVoice, setUseAIVoice] = useState(false);
     const [selectedAIVoice, setSelectedAIVoice] = useState<OpenAIVoice>('shimmer');
     const [aiProgress, setAIProgress] = useState('');
 
+    // Voice control states
+    const [isListening, setIsListening] = useState(false);
+    const [showSummary, setShowSummary] = useState<string | null>(null);
+    const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
+    const [lastCommand, setLastCommand] = useState<string | null>(null);
+
     // Sync states
     const [chunks, setChunks] = useState<string[]>([]);
     const [activeChunkIndex, setActiveChunkIndex] = useState(-1);
-    const scrollViewRef = React.useRef<ScrollView>(null);
+    const scrollViewRef = useRef<ScrollView>(null);
+
+    // Animations
+    const pulseAnim = useRef(new Animated.Value(1)).current;
+    const micScaleAnim = useRef(new Animated.Value(1)).current;
 
     useEffect(() => {
         if (selectedBook) {
@@ -32,11 +73,19 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
         };
     }, [selectedBook]);
 
+    // Update speech rate display
+    useEffect(() => {
+        const interval = setInterval(() => {
+            setSpeechRate(audioService.getRate());
+            setIsPlaying(audioService.getIsPlaying());
+        }, 500);
+        return () => clearInterval(interval);
+    }, []);
+
     // Save progress to DB when chapter changes
     useEffect(() => {
         if (selectedBook && currentChapterIndex >= 0 && currentChapterIndex !== selectedBook.last_chapter_index) {
             databaseService.updateBookProgress(selectedBook.id, currentChapterIndex);
-            // Also update store to keep it in sync
             useBookStore.getState().setSelectedBook({
                 ...selectedBook,
                 last_chapter_index: currentChapterIndex
@@ -44,12 +93,33 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
         }
     }, [currentChapterIndex, selectedBook]);
 
+    // Pulse animation for listening
+    useEffect(() => {
+        if (isListening) {
+            Animated.loop(
+                Animated.sequence([
+                    Animated.timing(pulseAnim, {
+                        toValue: 1.2,
+                        duration: 800,
+                        useNativeDriver: true,
+                    }),
+                    Animated.timing(pulseAnim, {
+                        toValue: 1,
+                        duration: 800,
+                        useNativeDriver: true,
+                    }),
+                ])
+            ).start();
+        } else {
+            pulseAnim.setValue(1);
+        }
+    }, [isListening]);
+
     const loadChapters = async () => {
         try {
             const data = await databaseService.getChapters(Number(selectedBook!.id));
             setChapters(data);
             if (data.length > 0) {
-                // Ensure index is within bounds (in case DB changed)
                 const safeIndex = Math.min(currentChapterIndex, data.length - 1);
                 setCurrentChapterIndex(safeIndex);
                 setChunks(audioService.chunkText(data[safeIndex].content, 300));
@@ -61,11 +131,29 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
 
     if (!selectedBook || chapters.length === 0) return (
         <View style={styles.container}>
-            <Text style={{ color: '#fff', textAlign: 'center', marginTop: 100 }}>Đang tải nội dung...</Text>
+            <ActivityIndicator size="large" color={Colors.primary} />
+            <Text style={styles.loadingText}>Đang tải nội dung...</Text>
         </View>
     );
 
     const currentChapter = chapters[currentChapterIndex];
+    
+    // Validate currentChapter
+    if (!currentChapter) {
+        return (
+            <View style={styles.container}>
+                <ActivityIndicator size="large" color={Colors.primary} />
+                <Text style={styles.loadingText}>Đang tải chương...</Text>
+            </View>
+        );
+    }
+    
+    // Log để debug
+    if (__DEV__) {
+        console.log('[PlayerScreen] Current chapter index:', currentChapterIndex);
+        console.log('[PlayerScreen] Current chapter title:', currentChapter.title);
+        console.log('[PlayerScreen] Current chapter content length:', currentChapter.content?.length || 0);
+    }
 
     const startPlayback = async (resumeMillis: number = 0) => {
         setIsPlaying(true);
@@ -100,22 +188,44 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                 resumeMillis
             );
         } else {
-            await audioService.speak(currentChapter.content, language, (idx, tot, cks) => {
-                setChunks(cks);
-                setActiveChunkIndex(idx);
-                if (scrollViewRef.current) {
-                    scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
-                }
-            }, rIdx);
+            await audioService.speak(
+                currentChapter.content, 
+                language, 
+                (idx, tot, cks) => {
+                    setChunks(cks);
+                    setActiveChunkIndex(idx);
+                    if (scrollViewRef.current) {
+                        scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
+                    }
+                }, 
+                rIdx,
+                speechRate
+            );
         }
     };
 
     const handlePlayPause = async () => {
-        if (isPlaying) {
-            await audioService.pause();
-            setIsPlaying(false);
-            setAIProgress('');
+        const actuallyPlaying = audioService.getIsPlaying();
+        
+        if (actuallyPlaying) {
+            // Nếu đang dùng AI voice và đang pause, thì resume
+            const state = audioService.getPlaybackState();
+            if (state.isPaused && state.isPlayingAI) {
+                await audioService.resume();
+                setIsPlaying(true);
+            } else {
+                await audioService.stop();
+                setIsPlaying(false);
+                setAIProgress('');
+                setActiveChunkIndex(-1);
+            }
         } else {
+            // Đảm bảo có currentChapter và content
+            if (!currentChapter || !currentChapter.content) {
+                console.error('[PlayerScreen] No chapter content available');
+                return;
+            }
+            
             await startPlayback();
         }
     };
@@ -125,7 +235,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
         setLanguage(newLang);
         if (isPlaying) {
             await audioService.stop();
-            handlePlayPause(); // Restart with new language
+            handlePlayPause();
         }
     };
 
@@ -142,15 +252,44 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
     };
 
     const handleVoiceChange = async (voice: OpenAIVoice) => {
+        // Chỉ cho phép thay đổi voice khi đang dùng AI voice
+        if (!useAIVoice) {
+            console.warn('[PlayerScreen] Cannot change voice when not using AI voice');
+            return;
+        }
+
         const state = audioService.getPlaybackState();
         const currentPos = state.lastPositionMillis;
-        console.log(`[PlayerScreen] Voice change requested. Capturing pos: ${currentPos}ms`);
+        const wasPlaying = isPlaying;
+        console.log(`[PlayerScreen] Voice change requested from ${selectedAIVoice} to ${voice}. Capturing pos: ${currentPos}ms`);
 
+        // Update state first
         setSelectedAIVoice(voice);
-        if (isPlaying) {
-            console.log(`[PlayerScreen] Restarting playback with voice ${voice} from ${currentPos}ms`);
+        
+        if (wasPlaying) {
+            console.log(`[PlayerScreen] Stopping current playback and restarting with voice ${voice} from ${currentPos}ms`);
+            // Stop current playback
             await audioService.stop();
-            await startPlayback(currentPos);
+            // Wait a bit to ensure everything is stopped
+            await new Promise(resolve => setTimeout(resolve, 150));
+            
+            // Restart with new voice - pass voice directly to avoid state timing issues
+            setIsPlaying(true);
+            const rIdx = activeChunkIndex === -1 ? 0 : activeChunkIndex;
+            await audioService.speakWithOpenAI(
+                currentChapter.content,
+                voice, // Use the new voice directly, not from state
+                (idx, tot, cks) => {
+                    setChunks(cks);
+                    setActiveChunkIndex(idx);
+                    if (scrollViewRef.current) {
+                        scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
+                    }
+                },
+                (msg) => setAIProgress(msg),
+                rIdx,
+                currentPos
+            );
         }
     };
 
@@ -179,6 +318,171 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                 setIsPlaying(false);
                 setTimeout(handlePlayPause, 100);
             }
+        }
+    };
+
+    // Voice command handler
+    const handleVoiceCommand = async () => {
+        setIsListening(true);
+        setLastCommand(null);
+        
+        try {
+            const command = await voiceCommandProcessor.processVoiceCommand(3000);
+            setIsListening(false);
+
+            if (!command || command.intent === 'unknown') {
+                setLastCommand('Không nhận diện được lệnh. Vui lòng thử lại.');
+                setTimeout(() => setLastCommand(null), 3000);
+                return;
+            }
+
+            setLastCommand(`Đã nhận: "${command.originalText}"`);
+            setTimeout(() => setLastCommand(null), 3000);
+
+            // Đảm bảo audio mode được restore trước khi execute command
+            await new Promise(resolve => setTimeout(resolve, 200));
+            
+            await executeCommand(command);
+        } catch (error: any) {
+            setIsListening(false);
+            console.error('[PlayerScreen] Voice command error:', error);
+            Alert.alert('Lỗi', error.message || 'Không thể xử lý lệnh giọng nói. Vui lòng kiểm tra kết nối mạng và API key.');
+        }
+    };
+
+    const executeCommand = async (command: VoiceCommand) => {
+        // Sync isPlaying state với audioService
+        const actuallyPlaying = audioService.getIsPlaying();
+        
+        switch (command.intent) {
+            case 'play':
+                if (!actuallyPlaying) {
+                    await handlePlayPause();
+                }
+                break;
+
+            case 'pause':
+                if (actuallyPlaying) {
+                    // Dừng trực tiếp bằng audioService
+                    await audioService.stop();
+                    setIsPlaying(false);
+                    setActiveChunkIndex(-1);
+                }
+                break;
+
+            case 'speed':
+                if (command.action === 'increase') {
+                    audioService.increaseRate(command.value as number);
+                    setSpeechRate(audioService.getRate());
+                } else if (command.action === 'decrease') {
+                    audioService.decreaseRate(Math.abs(command.value as number));
+                    setSpeechRate(audioService.getRate());
+                } else if (command.action === 'set') {
+                    audioService.setRate(command.value as number);
+                    setSpeechRate(audioService.getRate());
+                }
+                // Restart với tốc độ mới nếu đang phát (chỉ cho system TTS, không phải AI)
+                if (isPlaying && !useAIVoice) {
+                    await audioService.restartWithNewRate((index, total, currentChunks) => {
+                        setChunks(currentChunks);
+                        setActiveChunkIndex(index);
+                        if (scrollViewRef.current) {
+                            scrollViewRef.current.scrollTo({ y: index * 40, animated: true });
+                        }
+                    }, activeChunkIndex >= 0 ? activeChunkIndex : 0);
+                }
+                break;
+
+            case 'summarize':
+                setIsGeneratingSummary(true);
+                try {
+                    if (command.action === 'chapter') {
+                        const summary = await summarizationService.summarizeChapter(
+                            currentChapter.content,
+                            language
+                        );
+                        setShowSummary(summary);
+                    } else if (command.action === 'book') {
+                        const summary = await summarizationService.summarizeBook(
+                            chapters.map(ch => ({ title: ch.title, content: ch.content })),
+                            language
+                        );
+                        setShowSummary(summary);
+                    }
+                } catch (error: any) {
+                    Alert.alert('Lỗi', error.message || 'Không thể tạo tóm tắt');
+                } finally {
+                    setIsGeneratingSummary(false);
+                }
+                break;
+
+            case 'navigation':
+                if (command.action === 'next') {
+                    await handleNextChapter();
+                } else if (command.action === 'previous') {
+                    await handlePrevChapter();
+                } else if (command.action === 'goto') {
+                    const chapterIndex = command.value as number;
+                    if (chapterIndex >= 0 && chapterIndex < chapters.length) {
+                        setCurrentChapterIndex(chapterIndex);
+                        setChunks(audioService.chunkText(chapters[chapterIndex].content, 300));
+                        setActiveChunkIndex(-1);
+                        if (isPlaying) {
+                            await audioService.stop();
+                            setIsPlaying(false);
+                            setTimeout(handlePlayPause, 100);
+                        }
+                    }
+                }
+                break;
+        }
+    };
+
+    // Manual speed controls (chỉ cho system TTS)
+    const handleSpeedIncrease = () => {
+        if (useAIVoice) return; // AI voice không hỗ trợ speed control
+        audioService.increaseRate(0.25);
+        setSpeechRate(audioService.getRate());
+        if (isPlaying) {
+            audioService.restartWithNewRate((index, total, currentChunks) => {
+                setChunks(currentChunks);
+                setActiveChunkIndex(index);
+            }, activeChunkIndex >= 0 ? activeChunkIndex : 0);
+        }
+    };
+
+    const handleSpeedDecrease = () => {
+        if (useAIVoice) return; // AI voice không hỗ trợ speed control
+        audioService.decreaseRate(0.25);
+        setSpeechRate(audioService.getRate());
+        if (isPlaying) {
+            audioService.restartWithNewRate((index, total, currentChunks) => {
+                setChunks(currentChunks);
+                setActiveChunkIndex(index);
+            }, activeChunkIndex >= 0 ? activeChunkIndex : 0);
+        }
+    };
+
+    const handleManualSummarize = async (type: 'chapter' | 'book') => {
+        setIsGeneratingSummary(true);
+        try {
+            if (type === 'chapter') {
+                const summary = await summarizationService.summarizeChapter(
+                    currentChapter.content,
+                    language
+                );
+                setShowSummary(summary);
+            } else {
+                const summary = await summarizationService.summarizeBook(
+                    chapters.map(ch => ({ title: ch.title, content: ch.content })),
+                    language
+                );
+                setShowSummary(summary);
+            }
+        } catch (error: any) {
+            Alert.alert('Lỗi', error.message || 'Không thể tạo tóm tắt');
+        } finally {
+            setIsGeneratingSummary(false);
         }
     };
 
@@ -224,25 +528,49 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
             )}
 
             <View style={styles.content}>
-                <View style={[styles.coverContainer, isPlaying && { transform: [{ scale: 1.05 }] }]}>
-                    {selectedBook.cover_uri && selectedBook.cover_uri.trim() !== '' ? (
-                        <Image source={{ uri: selectedBook.cover_uri }} style={styles.cover} />
-                    ) : (
-                        <View style={[styles.cover, { backgroundColor: Colors.surface, justifyContent: 'center', alignItems: 'center' }]}>
-                            <BookOpen color={Colors.textSecondary} size={80} />
+                {/* Compact Header with Cover and Info */}
+                <View style={styles.topSection}>
+                    <Animated.View 
+                        style={[
+                            styles.coverContainer, 
+                            isPlaying && { transform: [{ scale: 1.05 }] },
+                            isListening && { transform: [{ scale: pulseAnim }] }
+                        ]}
+                    >
+                        {selectedBook.cover_uri && selectedBook.cover_uri.trim() !== '' ? (
+                            <Image source={{ uri: selectedBook.cover_uri }} style={styles.cover} />
+                        ) : (
+                            <View style={[styles.cover, { backgroundColor: Colors.surface, justifyContent: 'center', alignItems: 'center' }]}>
+                                <BookOpen color={Colors.textSecondary} size={40} />
+                            </View>
+                        )}
+                    </Animated.View>
+
+                    <View style={styles.infoContainer}>
+                        <Text style={styles.title} numberOfLines={2}>{selectedBook.title}</Text>
+                        <Text style={styles.author} numberOfLines={1}>{selectedBook.author}</Text>
+                        <Text style={styles.chapterTitle} numberOfLines={1}>{currentChapter.title}</Text>
+                        
+                        {/* Speed Control - Compact */}
+                        <View style={styles.speedControl}>
+                            <TouchableOpacity onPress={handleSpeedDecrease} style={styles.speedButton}>
+                                <ChevronDown color={Colors.textSecondary} size={16} />
+                            </TouchableOpacity>
+                            <View style={styles.speedDisplay}>
+                                <Gauge color={Colors.primary} size={14} />
+                                <Text style={styles.speedText}>{speechRate.toFixed(2)}x</Text>
+                            </View>
+                            <TouchableOpacity onPress={handleSpeedIncrease} style={styles.speedButton}>
+                                <ChevronUp color={Colors.textSecondary} size={16} />
+                            </TouchableOpacity>
                         </View>
-                    )}
+                    </View>
                 </View>
 
-                <View style={styles.infoContainer}>
-                    <Text style={styles.title} numberOfLines={1}>{selectedBook.title}</Text>
-                    <Text style={styles.author}>{selectedBook.author}</Text>
-                    <Text style={styles.chapterTitle}>{currentChapter.title}</Text>
-                </View>
-
+                {/* Expanded Text Reader */}
                 <View style={styles.readerWrapper}>
                     <ScrollView
-                        ref={scrollViewRef}
+                        ref={scrollViewRef as any}
                         style={styles.textContainer}
                         contentContainerStyle={styles.scrollContent}
                         showsVerticalScrollIndicator={false}
@@ -263,19 +591,26 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                     </ScrollView>
                 </View>
 
+                {/* Command Feedback */}
+                {lastCommand && (
+                    <View style={styles.commandFeedback}>
+                        <Text style={styles.commandText}>{lastCommand}</Text>
+                    </View>
+                )}
+
                 <View style={styles.controls}>
                     <View style={styles.progressBar}>
                         <View style={[styles.progressFill, { width: `${((currentChapterIndex + 1) / chapters.length) * 100}%` }]} />
                     </View>
 
                     <View style={styles.btnRow}>
-                        <TouchableOpacity onPress={handlePrevChapter}>
+                        <TouchableOpacity onPress={handlePrevChapter} style={styles.navButton}>
                             <SkipBack color={Colors.text} size={32} />
                         </TouchableOpacity>
 
                         <TouchableOpacity
-                            style={styles.playBtn}
-                            onPress={() => handlePlayPause()}
+                            style={[styles.playBtn, isPlaying && styles.playBtnActive]}
+                            onPress={handlePlayPause}
                         >
                             {isPlaying ? (
                                 <Pause color={Colors.background} size={40} fill={Colors.background} />
@@ -284,12 +619,68 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                             )}
                         </TouchableOpacity>
 
-                        <TouchableOpacity onPress={handleNextChapter}>
+                        <TouchableOpacity onPress={handleNextChapter} style={styles.navButton}>
                             <SkipForward color={Colors.text} size={32} />
+                        </TouchableOpacity>
+                    </View>
+
+                    {/* Voice Control & Summary Buttons */}
+                    <View style={styles.actionRow}>
+                        <TouchableOpacity
+                            style={[styles.voiceButton, isListening && styles.voiceButtonActive]}
+                            onPress={handleVoiceCommand}
+                            disabled={isListening}
+                        >
+                            {isListening ? (
+                                <ActivityIndicator size="small" color={Colors.error} />
+                            ) : (
+                                <Mic 
+                                    color={isListening ? Colors.error : Colors.text} 
+                                    size={24} 
+                                />
+                            )}
+                            <Text style={[styles.actionButtonText, isListening && styles.actionButtonTextActive]}>
+                                {isListening ? 'Đang nghe...' : 'Giọng nói'}
+                            </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={styles.summaryButton}
+                            onPress={() => handleManualSummarize('chapter')}
+                            disabled={isGeneratingSummary}
+                        >
+                            {isGeneratingSummary ? (
+                                <ActivityIndicator size="small" color={Colors.primary} />
+                            ) : (
+                                <FileText color={Colors.primary} size={24} />
+                            )}
+                            <Text style={styles.actionButtonText}>Tóm tắt</Text>
                         </TouchableOpacity>
                     </View>
                 </View>
             </View>
+
+            {/* Summary Modal */}
+            <Modal 
+                visible={!!showSummary} 
+                transparent={true}
+                animationType="slide"
+                onRequestClose={() => setShowSummary(null)}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalContent}>
+                        <View style={styles.modalHeader}>
+                            <Text style={styles.modalTitle}>Tóm tắt</Text>
+                            <TouchableOpacity onPress={() => setShowSummary(null)}>
+                                <X color={Colors.text} size={24} />
+                            </TouchableOpacity>
+                        </View>
+                        <ScrollView style={styles.modalBody}>
+                            <Text style={styles.summaryText}>{showSummary}</Text>
+                        </ScrollView>
+                    </View>
+                </View>
+            </Modal>
         </View>
     );
 }
@@ -299,6 +690,11 @@ const styles = StyleSheet.create({
         flex: 1,
         backgroundColor: Colors.background,
         paddingTop: 60,
+    },
+    loadingText: {
+        color: Colors.text,
+        marginTop: 20,
+        fontSize: 16,
     },
     header: {
         flexDirection: 'row',
@@ -365,110 +761,280 @@ const styles = StyleSheet.create({
         paddingHorizontal: 10,
         paddingVertical: 6,
         borderRadius: 20,
+        gap: 6,
     },
     langText: {
         color: Colors.primary,
         marginLeft: 4,
         fontWeight: 'bold',
-        fontSize: 14,
+        fontSize: 12,
     },
     content: {
         flex: 1,
-        alignItems: 'center',
         paddingHorizontal: Spacing.lg,
     },
+    topSection: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        marginBottom: Spacing.md,
+        gap: Spacing.md,
+    },
     coverContainer: {
-        width: 200,
-        height: 280,
-        borderRadius: 16,
+        width: 100,
+        height: 140,
+        borderRadius: 12,
         overflow: 'hidden',
-        elevation: 10,
+        elevation: 8,
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 5,
-        marginBottom: Spacing.lg,
+        shadowOffset: { width: 0, height: 3 },
+        shadowOpacity: 0.25,
+        shadowRadius: 4,
+        flexShrink: 0,
     },
     cover: {
         width: '100%',
         height: '100%',
+        resizeMode: 'cover',
     },
     infoContainer: {
-        alignItems: 'center',
-        marginBottom: Spacing.lg,
+        flex: 1,
+        justifyContent: 'flex-start',
+        paddingTop: Spacing.xs,
     },
     title: {
         color: Colors.text,
-        fontSize: 24,
+        fontSize: 18,
         fontWeight: 'bold',
-        textAlign: 'center',
+        marginBottom: 4,
+        lineHeight: 24,
     },
     author: {
         color: Colors.textSecondary,
-        fontSize: 16,
-        marginTop: 4,
+        fontSize: 13,
+        marginBottom: 6,
     },
     chapterTitle: {
         color: Colors.primary,
-        fontSize: 14,
-        fontWeight: 'bold',
-        marginTop: 8,
+        fontSize: 11,
+        fontWeight: '600',
+        marginBottom: Spacing.sm,
         textTransform: 'uppercase',
+        letterSpacing: 0.5,
+    },
+    speedControl: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'flex-start',
+        backgroundColor: Colors.surface,
+        paddingHorizontal: Spacing.sm,
+        paddingVertical: 4,
+        borderRadius: 16,
+        alignSelf: 'flex-start',
+        gap: Spacing.xs,
+        marginTop: 4,
+    },
+    speedButton: {
+        padding: 2,
+    },
+    speedDisplay: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        paddingHorizontal: Spacing.xs,
+    },
+    speedText: {
+        color: Colors.primary,
+        fontSize: 13,
+        fontWeight: 'bold',
     },
     readerWrapper: {
         flex: 1,
         width: '100%',
-        marginBottom: Spacing.lg,
+        marginBottom: Spacing.md,
         backgroundColor: Colors.surface,
-        borderRadius: 12,
+        borderRadius: 16,
         overflow: 'hidden',
+        borderWidth: 1,
+        borderColor: 'rgba(56, 189, 248, 0.1)',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 8,
+        elevation: 3,
     },
     textContainer: {
         flex: 1,
-        padding: Spacing.md,
+        padding: Spacing.lg,
     },
     scrollContent: {
-        paddingBottom: 40,
+        paddingBottom: 60,
     },
     contentText: {
-        color: Colors.textSecondary,
+        color: Colors.text,
         fontSize: 18,
-        lineHeight: 28,
-        marginBottom: 12,
+        lineHeight: 32,
+        marginBottom: 16,
+        letterSpacing: 0.3,
     },
     activeText: {
         color: Colors.primary,
-        fontWeight: 'bold',
-        backgroundColor: 'rgba(52, 199, 89, 0.1)',
-        borderRadius: 4,
+        fontWeight: '700',
+        backgroundColor: 'rgba(56, 189, 248, 0.2)',
+        padding: 12,
+        borderRadius: 8,
+        borderLeftWidth: 3,
+        borderLeftColor: Colors.primary,
+        shadowColor: Colors.primary,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.2,
+        shadowRadius: 4,
+        elevation: 2,
+    },
+    commandFeedback: {
+        backgroundColor: Colors.surface,
+        paddingHorizontal: Spacing.md,
+        paddingVertical: Spacing.sm,
+        borderRadius: 8,
+        marginBottom: Spacing.sm,
+        width: '100%',
+    },
+    commandText: {
+        color: Colors.success,
+        fontSize: 12,
+        textAlign: 'center',
     },
     controls: {
         width: '100%',
-        paddingBottom: 40,
+        paddingBottom: 20,
     },
     progressBar: {
-        height: 6,
+        height: 8,
         backgroundColor: Colors.surface,
-        borderRadius: 3,
-        marginBottom: Spacing.xl,
+        borderRadius: 4,
+        marginBottom: Spacing.lg,
+        overflow: 'hidden',
+        borderWidth: 1,
+        borderColor: 'rgba(56, 189, 248, 0.2)',
     },
     progressFill: {
-        width: '30%',
         height: '100%',
         backgroundColor: Colors.primary,
-        borderRadius: 3,
+        borderRadius: 4,
+        shadowColor: Colors.primary,
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.6,
+        shadowRadius: 4,
     },
     btnRow: {
         flexDirection: 'row',
         justifyContent: 'space-evenly',
         alignItems: 'center',
+        marginBottom: Spacing.md,
+    },
+    navButton: {
+        padding: Spacing.sm,
     },
     playBtn: {
-        width: 80,
-        height: 80,
-        borderRadius: 40,
+        width: 72,
+        height: 72,
+        borderRadius: 36,
         backgroundColor: Colors.primary,
         justifyContent: 'center',
         alignItems: 'center',
+        elevation: 8,
+        shadowColor: Colors.primary,
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.5,
+        shadowRadius: 12,
+        borderWidth: 3,
+        borderColor: 'rgba(56, 189, 248, 0.3)',
+    },
+    playBtnActive: {
+        backgroundColor: Colors.accent,
+        borderColor: 'rgba(129, 140, 248, 0.3)',
+        transform: [{ scale: 1.05 }],
+    },
+    actionRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-around',
+        gap: Spacing.md,
+    },
+    voiceButton: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: Colors.surface,
+        paddingVertical: Spacing.sm,
+        paddingHorizontal: Spacing.md,
+        borderRadius: 12,
+        gap: 6,
+        borderWidth: 1,
+        borderColor: 'rgba(56, 189, 248, 0.2)',
+    },
+    voiceButtonActive: {
+        backgroundColor: 'rgba(239, 68, 68, 0.15)',
+        borderWidth: 2,
+        borderColor: Colors.error,
+        shadowColor: Colors.error,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+    },
+    summaryButton: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: Colors.surface,
+        paddingVertical: Spacing.sm,
+        paddingHorizontal: Spacing.md,
+        borderRadius: 12,
+        gap: 6,
+        borderWidth: 1,
+        borderColor: 'rgba(56, 189, 248, 0.2)',
+    },
+    actionButtonText: {
+        color: Colors.text,
+        fontSize: 12,
+        fontWeight: '600',
+    },
+    actionButtonTextActive: {
+        color: Colors.error,
+    },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0, 0, 0, 0.7)',
+        justifyContent: 'flex-end',
+    },
+    modalContent: {
+        backgroundColor: Colors.surface,
+        borderTopLeftRadius: 24,
+        borderTopRightRadius: 24,
+        maxHeight: '80%',
+        paddingTop: Spacing.lg,
+    },
+    modalHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: Spacing.lg,
+        paddingBottom: Spacing.md,
+        borderBottomWidth: 1,
+        borderBottomColor: Colors.background,
+    },
+    modalTitle: {
+        color: Colors.text,
+        fontSize: 20,
+        fontWeight: 'bold',
+    },
+    modalBody: {
+        padding: Spacing.lg,
+        maxHeight: 500,
+    },
+    summaryText: {
+        color: Colors.text,
+        fontSize: 16,
+        lineHeight: 24,
     },
 });
