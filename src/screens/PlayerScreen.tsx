@@ -283,30 +283,194 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
     };
 
     const handleNextChapter = async () => {
-        if (currentChapterIndex < chapters.length - 1) {
-            const nextIndex = currentChapterIndex + 1;
-            setCurrentChapterIndex(nextIndex);
-            setChunks(audioService.chunkText(chapters[nextIndex].content, 300));
-            setActiveChunkIndex(-1);
-            if (isPlaying) {
-                await audioService.stop();
-                setIsPlaying(false);
-                setTimeout(handlePlayPause, 100);
+        // Validate: Check if we can go to next chapter
+        if (currentChapterIndex >= chapters.length - 1) {
+            console.log('[PlayerScreen] Already at last chapter');
+            return;
+        }
+
+        const nextIndex = currentChapterIndex + 1;
+        const nextChapter = chapters[nextIndex];
+
+        // Validate: Ensure next chapter exists and has content
+        if (!nextChapter || !nextChapter.content) {
+            console.error('[PlayerScreen] Next chapter not found or has no content');
+            Alert.alert('Lỗi', 'Chương tiếp theo không tồn tại hoặc chưa có nội dung');
+            return;
+        }
+
+        console.log(`[PlayerScreen] Moving to next chapter: ${nextIndex} - ${nextChapter.title}`);
+
+        // Stop audio first and wait for it to fully stop
+        const wasPlaying = isPlaying;
+        if (wasPlaying) {
+            console.log('[PlayerScreen] Stopping audio before chapter change...');
+            await audioService.stop();
+            setIsPlaying(false);
+            // Wait a bit to ensure audio is fully stopped
+            await new Promise(resolve => setTimeout(resolve, 300));
+            console.log('[PlayerScreen] Audio stopped, proceeding with chapter change');
+        }
+
+        // Update chunks with new chapter content FIRST
+        const newChunks = audioService.chunkText(nextChapter.content, 300);
+        console.log(`[PlayerScreen] Updated chunks for chapter ${nextIndex + 1}, total chunks: ${newChunks.length}`);
+
+        // Update state with new chapter - do this in a batch to ensure consistency
+        setCurrentChapterIndex(nextIndex);
+        setChunks(newChunks);
+        setActiveChunkIndex(-1);
+        setAIProgress('');
+
+        // Reset scroll position - use requestAnimationFrame to ensure DOM is updated
+        requestAnimationFrame(() => {
+            if (scrollViewRef.current) {
+                scrollViewRef.current.scrollTo({ y: 0, animated: false });
             }
+        });
+
+        // If was playing, start playback of new chapter
+        if (wasPlaying) {
+            // Capture chapter content to avoid closure issues
+            const chapterContent = nextChapter.content;
+            const chapterIdx = nextIndex;
+            const currentUseAIVoice = useAIVoice;
+            const currentSelectedAIVoice = selectedAIVoice;
+            const currentLanguage = language;
+            const currentSpeechRate = speechRate;
+            
+            // Use longer timeout to ensure all state updates are complete
+            setTimeout(async () => {
+                console.log(`[PlayerScreen] Starting playback of next chapter ${chapterIdx + 1}`);
+                // Use the captured chapter content instead of currentChapter from closure
+                const rIdx = 0; // Start from beginning
+                if (currentUseAIVoice) {
+                    await audioService.speakWithOpenAI(
+                        chapterContent,
+                        currentSelectedAIVoice,
+                        (idx, tot, cks) => {
+                            setChunks(cks);
+                            setActiveChunkIndex(idx);
+                            if (scrollViewRef.current) {
+                                scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
+                            }
+                        },
+                        (msg) => setAIProgress(msg),
+                        rIdx,
+                        0
+                    );
+                } else {
+                    await audioService.speak(
+                        chapterContent, 
+                        currentLanguage, 
+                        (idx, tot, cks) => {
+                            setChunks(cks);
+                            setActiveChunkIndex(idx);
+                            if (scrollViewRef.current) {
+                                scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
+                            }
+                        }, 
+                        rIdx,
+                        currentSpeechRate
+                    );
+                }
+                setIsPlaying(true);
+            }, 200);
         }
     };
 
     const handlePrevChapter = async () => {
-        if (currentChapterIndex > 0) {
-            const prevIndex = currentChapterIndex - 1;
-            setCurrentChapterIndex(prevIndex);
-            setChunks(audioService.chunkText(chapters[prevIndex].content, 300));
-            setActiveChunkIndex(-1);
-            if (isPlaying) {
-                await audioService.stop();
-                setIsPlaying(false);
-                setTimeout(handlePlayPause, 100);
+        // Validate: Check if we can go to previous chapter
+        if (currentChapterIndex <= 0) {
+            console.log('[PlayerScreen] Already at first chapter');
+            return;
+        }
+
+        const prevIndex = currentChapterIndex - 1;
+        const prevChapter = chapters[prevIndex];
+
+        // Validate: Ensure previous chapter exists and has content
+        if (!prevChapter || !prevChapter.content) {
+            console.error('[PlayerScreen] Previous chapter not found or has no content');
+            Alert.alert('Lỗi', 'Chương trước không tồn tại hoặc chưa có nội dung');
+            return;
+        }
+
+        console.log(`[PlayerScreen] Moving to previous chapter: ${prevIndex} - ${prevChapter.title}`);
+
+        // Stop audio first and wait for it to fully stop
+        const wasPlaying = isPlaying;
+        if (wasPlaying) {
+            await audioService.stop();
+            setIsPlaying(false);
+            // Wait a bit to ensure audio is fully stopped
+            await new Promise(resolve => setTimeout(resolve, 300));
+        }
+
+        // Update chunks with new chapter content FIRST
+        const newChunks = audioService.chunkText(prevChapter.content, 300);
+        console.log(`[PlayerScreen] Updated chunks for chapter ${prevIndex + 1}, total chunks: ${newChunks.length}`);
+
+        // Update state with new chapter - do this in a batch to ensure consistency
+        setCurrentChapterIndex(prevIndex);
+        setChunks(newChunks);
+        setActiveChunkIndex(-1);
+        setAIProgress('');
+
+        // Reset scroll position - use requestAnimationFrame to ensure DOM is updated
+        requestAnimationFrame(() => {
+            if (scrollViewRef.current) {
+                scrollViewRef.current.scrollTo({ y: 0, animated: false });
             }
+        });
+
+        // If was playing, start playback of new chapter
+        if (wasPlaying) {
+            // Capture chapter content to avoid closure issues
+            const chapterContent = prevChapter.content;
+            const chapterIdx = prevIndex;
+            const currentUseAIVoice = useAIVoice;
+            const currentSelectedAIVoice = selectedAIVoice;
+            const currentLanguage = language;
+            const currentSpeechRate = speechRate;
+            
+            // Use longer timeout to ensure all state updates are complete
+            setTimeout(async () => {
+                console.log(`[PlayerScreen] Starting playback of previous chapter ${chapterIdx + 1}`);
+                // Use the captured chapter content instead of currentChapter from closure
+                const rIdx = 0; // Start from beginning
+                if (currentUseAIVoice) {
+                    await audioService.speakWithOpenAI(
+                        chapterContent,
+                        currentSelectedAIVoice,
+                        (idx, tot, cks) => {
+                            setChunks(cks);
+                            setActiveChunkIndex(idx);
+                            if (scrollViewRef.current) {
+                                scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
+                            }
+                        },
+                        (msg) => setAIProgress(msg),
+                        rIdx,
+                        0
+                    );
+                } else {
+                    await audioService.speak(
+                        chapterContent, 
+                        currentLanguage, 
+                        (idx, tot, cks) => {
+                            setChunks(cks);
+                            setActiveChunkIndex(idx);
+                            if (scrollViewRef.current) {
+                                scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
+                            }
+                        }, 
+                        rIdx,
+                        currentSpeechRate
+                    );
+                }
+                setIsPlaying(true);
+            }, 200);
         }
     };
 
@@ -325,7 +489,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                 return;
             }
 
-            setLastCommand(`Đã nhận: "${command.originalText}"`);
+            setLastCommand(`Đã thực hiện lệnh!`);
             setTimeout(() => setLastCommand(null), 3000);
 
             // Đảm bảo audio mode được restore trước khi execute command
@@ -412,15 +576,110 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                     await handlePrevChapter();
                 } else if (command.action === 'goto') {
                     const chapterIndex = command.value as number;
-                    if (chapterIndex >= 0 && chapterIndex < chapters.length) {
-                        setCurrentChapterIndex(chapterIndex);
-                        setChunks(audioService.chunkText(chapters[chapterIndex].content, 300));
+                    console.log(`[PlayerScreen] Goto command: target chapter index ${chapterIndex} (chương ${chapterIndex + 1}), current index: ${currentChapterIndex} (chương ${currentChapterIndex + 1})`);
+                    
+                    // Validate: Check if chapter index is valid
+                    if (chapterIndex < 0 || chapterIndex >= chapters.length) {
+                        console.error(`[PlayerScreen] Invalid chapter index: ${chapterIndex} (valid range: 0-${chapters.length - 1})`);
+                        Alert.alert('Lỗi', `Chương ${chapterIndex + 1} không tồn tại`);
+                        return;
+                    }
+
+                    const targetChapter = chapters[chapterIndex];
+
+                    // Validate: Ensure chapter exists and has content
+                    if (!targetChapter || !targetChapter.content) {
+                        console.error('[PlayerScreen] Target chapter not found or has no content');
+                        Alert.alert('Lỗi', 'Chương không tồn tại hoặc chưa có nội dung');
+                        return;
+                    }
+
+                    // Don't do anything if already at target chapter (but still update to ensure UI is fresh)
+                    if (currentChapterIndex === chapterIndex) {
+                        console.log('[PlayerScreen] Already at target chapter, refreshing UI');
+                        // Still update chunks and reset scroll to ensure UI is fresh
+                        setChunks(audioService.chunkText(targetChapter.content, 300));
                         setActiveChunkIndex(-1);
-                        if (isPlaying) {
-                            await audioService.stop();
-                            setIsPlaying(false);
-                            setTimeout(handlePlayPause, 100);
+                        if (scrollViewRef.current) {
+                            scrollViewRef.current.scrollTo({ y: 0, animated: false });
                         }
+                        return;
+                    }
+
+                    console.log(`[PlayerScreen] Moving to chapter: ${chapterIndex} - ${targetChapter.title}`);
+
+                    // Stop audio first and wait for it to fully stop
+                    const wasPlaying = actuallyPlaying;
+                    if (wasPlaying) {
+                        console.log('[PlayerScreen] Stopping audio before chapter change...');
+                        await audioService.stop();
+                        setIsPlaying(false);
+                        // Wait a bit to ensure audio is fully stopped
+                        await new Promise(resolve => setTimeout(resolve, 300));
+                        console.log('[PlayerScreen] Audio stopped, proceeding with chapter change');
+                    }
+
+                    // Update chunks with new chapter content FIRST
+                    const newChunks = audioService.chunkText(targetChapter.content, 300);
+                    console.log(`[PlayerScreen] Updated chunks for chapter ${chapterIndex + 1}, total chunks: ${newChunks.length}`);
+
+                    // Update state with new chapter - do this in a batch to ensure consistency
+                    setCurrentChapterIndex(chapterIndex);
+                    setChunks(newChunks);
+                    setActiveChunkIndex(-1);
+                    setAIProgress('');
+
+                    // Reset scroll position - use requestAnimationFrame to ensure DOM is updated
+                    requestAnimationFrame(() => {
+                        if (scrollViewRef.current) {
+                            scrollViewRef.current.scrollTo({ y: 0, animated: false });
+                        }
+                    });
+
+                    // If was playing, start playback of new chapter after state is updated
+                    if (wasPlaying) {
+                        // Use longer timeout to ensure all state updates are complete
+                        // Also capture the chapter content to avoid closure issues
+                        const chapterContent = targetChapter.content;
+                        const chapterIdx = chapterIndex;
+                        setTimeout(async () => {
+                            console.log(`[PlayerScreen] Starting playback of new chapter ${chapterIdx + 1}`);
+                            // Use the captured chapter content instead of currentChapter from closure
+                            const rIdx = 0; // Start from beginning
+                            if (useAIVoice) {
+                                await audioService.speakWithOpenAI(
+                                    chapterContent,
+                                    selectedAIVoice,
+                                    (idx, tot, cks) => {
+                                        setChunks(cks);
+                                        setActiveChunkIndex(idx);
+                                        if (scrollViewRef.current) {
+                                            scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
+                                        }
+                                    },
+                                    (msg) => setAIProgress(msg),
+                                    rIdx,
+                                    0
+                                );
+                            } else {
+                                await audioService.speak(
+                                    chapterContent, 
+                                    language, 
+                                    (idx, tot, cks) => {
+                                        setChunks(cks);
+                                        setActiveChunkIndex(idx);
+                                        if (scrollViewRef.current) {
+                                            scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
+                                        }
+                                    }, 
+                                    rIdx,
+                                    speechRate
+                                );
+                            }
+                            setIsPlaying(true);
+                        }, 200);
+                    } else {
+                        console.log(`[PlayerScreen] Chapter changed to ${chapterIndex + 1}, not playing`);
                     }
                 }
                 break;

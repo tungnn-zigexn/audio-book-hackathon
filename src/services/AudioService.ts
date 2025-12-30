@@ -459,8 +459,19 @@ class AudioService {
         try {
             console.log('[AudioService] Stopping speech...');
             if (this.sound) {
-                await this.sound.stopAsync();
-                await this.sound.unloadAsync();
+                try {
+                    // Check if sound is loaded before trying to stop
+                    const status = await this.sound.getStatusAsync();
+                    if (status.isLoaded) {
+                        await this.sound.stopAsync();
+                        await this.sound.unloadAsync();
+                    }
+                } catch (soundError: any) {
+                    // Ignore errors if sound is not loaded or already unloaded
+                    if (soundError.message && !soundError.message.includes('not loaded')) {
+                        console.warn('[AudioService] Error stopping sound:', soundError.message);
+                    }
+                }
                 this.sound = null;
             }
             // Stop tất cả speech đang phát
