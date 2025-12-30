@@ -1,19 +1,18 @@
-import React from 'react';
-import { StyleSheet, Text, View, FlatList, TouchableOpacity, Image } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { StyleSheet, Text, View, FlatList, TouchableOpacity, Image, TextInput, Alert } from 'react-native';
 import { Colors, Spacing } from '../constants/theme';
-import { BookOpen, Mic, MicOff } from 'lucide-react-native';
+import { BookOpen, Search, Trash2 } from 'lucide-react-native';
 import { databaseService, Book } from '../services/DatabaseService';
-import { voiceService } from '../services/VoiceService';
 import { useBookStore } from '../store/useBookStore';
+import { bookImportService } from '../services/BookImportService';
 
 export default function LibraryScreen({ onSelectBook }: { onSelectBook: () => void }) {
     console.log('[LibraryScreen] LibraryScreen rendered');
     const { setSelectedBook } = useBookStore();
-    const [dbBooks, setDbBooks] = React.useState<Book[]>([]);
-    const [isRecording, setIsRecording] = React.useState(false);
-    const [isProcessing, setIsProcessing] = React.useState(false);
+    const [dbBooks, setDbBooks] = useState<Book[]>([]);
+    const [searchQuery, setSearchQuery] = useState('');
 
-    React.useEffect(() => {
+    useEffect(() => {
         loadBooks();
     }, []);
 
@@ -31,76 +30,56 @@ export default function LibraryScreen({ onSelectBook }: { onSelectBook: () => vo
         onSelectBook();
     };
 
-    const handleVoiceCommand = async () => {
-        alert('Tính năng điều khiển bằng giọng nói AI hiện đang tạm bảo trì.');
-        return;
-
-        // Temporarily disabled OpenAI Whisper
-        /*
-        if (isRecording) {
-            setIsRecording(false);
-            setIsProcessing(true);
-            try {
-                const uri = await voiceService.stopRecording();
-                if (uri) {
-                    const transcription = await openAIService.transcribeAudio(uri);
-                    console.log('[LibraryScreen] Recognized command:', transcription);
-                    processCommand(transcription);
+    const handleReset = () => {
+        Alert.alert(
+            "Xóa toàn bộ dữ liệu",
+            "Bạn có chắc muốn xóa toàn bộ sách và tiến trình hiện tại để nạp lại từ database gốc?",
+            [
+                { text: "Hủy", style: "cancel" },
+                {
+                    text: "Xóa",
+                    style: "destructive",
+                    onPress: async () => {
+                        await databaseService.clearBooks();
+                        // Re-import immediately so user doesn't have to reload
+                        await bookImportService.importLocalEpubs();
+                        await loadBooks();
+                        Alert.alert("Thành công", "Thư viện đã được làm mới.");
+                    }
                 }
-            } catch (error) {
-                console.error('[LibraryScreen] Voice Command Error:', error);
-            } finally {
-                setIsProcessing(false);
-            }
-        } else {
-            await voiceService.startRecording();
-            setIsRecording(true);
-        }
-        */
-    };
-
-    const processCommand = (text: string) => {
-        const query = text.toLowerCase();
-        console.log('[LibraryScreen] Processing query:', query);
-
-        // Simple command parsing: "đọc sách [tên]" or "read book [name]"
-        const bookToRead = dbBooks.find(book =>
-            query.includes(book.title.toLowerCase()) ||
-            query.includes('đọc sách') ||
-            query.includes('read book')
+            ]
         );
-
-        if (bookToRead) {
-            console.log('[LibraryScreen] Command matched book:', bookToRead.title);
-            handlePress(bookToRead);
-        } else {
-            alert(`Không tìm thấy sách phù hợp với lệnh: "${text}"`);
-        }
     };
+
+    const filteredBooks = dbBooks.filter(book =>
+        (book.title?.toLowerCase() || '').includes(searchQuery.toLowerCase()) ||
+        (book.author?.toLowerCase() || '').includes(searchQuery.toLowerCase())
+    );
 
     return (
         <View style={styles.container}>
             <View style={styles.header}>
-                <Text style={styles.title}>Thư viện của bạn</Text>
-                <TouchableOpacity
-                    style={[
-                        styles.micButton,
-                        isRecording && styles.micButtonActive,
-                        isProcessing && { opacity: 0.5 }
-                    ]}
-                    disabled={isProcessing}
-                    onPress={handleVoiceCommand}
-                >
-                    {isRecording ? (
-                        <MicOff color={Colors.error} size={28} />
-                    ) : (
-                        <Mic color={isProcessing ? Colors.textSecondary : Colors.primary} size={28} />
-                    )}
-                </TouchableOpacity>
+                <View style={styles.headerTop}>
+                    <Text style={styles.title}>Thư viện</Text>
+                    <TouchableOpacity onPress={handleReset}>
+                        <Trash2 color={Colors.textSecondary} size={24} />
+                    </TouchableOpacity>
+                </View>
+            </View>
+
+            <View style={styles.searchBar}>
+                <Search color={Colors.textSecondary} size={20} />
+                <TextInput
+                    placeholder="Tìm kiếm sách hoặc tác giả..."
+                    placeholderTextColor={Colors.textSecondary}
+                    style={styles.searchInput}
+                    value={searchQuery}
+                    onChangeText={setSearchQuery}
+                />
             </View>
 
             <FlatList
-                data={dbBooks}
+                data={filteredBooks}
                 keyExtractor={(item) => item.id.toString()}
                 contentContainerStyle={styles.list}
                 renderItem={({ item }) => (
@@ -132,26 +111,34 @@ const styles = StyleSheet.create({
         paddingTop: 60,
     },
     header: {
+        paddingHorizontal: Spacing.lg,
+        marginBottom: Spacing.md,
+    },
+    headerTop: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        paddingHorizontal: Spacing.lg,
-        marginBottom: Spacing.lg,
     },
     title: {
-        fontSize: 28,
+        fontSize: 32,
         fontWeight: 'bold',
         color: Colors.text,
     },
-    micButton: {
+    searchBar: {
+        flexDirection: 'row',
+        alignItems: 'center',
         backgroundColor: Colors.surface,
-        padding: Spacing.sm,
-        borderRadius: 20,
+        marginHorizontal: Spacing.lg,
+        paddingHorizontal: Spacing.md,
+        borderRadius: 12,
+        height: 50,
+        marginBottom: Spacing.lg,
     },
-    micButtonActive: {
-        backgroundColor: '#450a0a', // Dark red background
-        borderWidth: 1,
-        borderColor: Colors.error,
+    searchInput: {
+        flex: 1,
+        color: Colors.text,
+        marginLeft: Spacing.sm,
+        fontSize: 16,
     },
     list: {
         paddingHorizontal: Spacing.lg,
