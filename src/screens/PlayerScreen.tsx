@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, Image, ScrollView } from 'react-native';
 import { Colors, Spacing } from '../constants/theme';
-import { Play, Pause, SkipForward, SkipBack, ArrowLeft, Languages } from 'lucide-react-native';
+import { Play, Pause, SkipForward, SkipBack, ArrowLeft, Languages, BookOpen } from 'lucide-react-native';
 import { useBookStore } from '../store/useBookStore';
 import { audioService } from '../services/AudioService';
 import { databaseService, Chapter } from '../services/DatabaseService';
@@ -9,9 +9,14 @@ import { databaseService, Chapter } from '../services/DatabaseService';
 export default function PlayerScreen({ onBack }: { onBack: () => void }) {
     const { selectedBook } = useBookStore();
     const [chapters, setChapters] = useState<Chapter[]>([]);
-    const [currentChapterIndex, setCurrentChapterIndex] = useState(0);
+    const [currentChapterIndex, setCurrentChapterIndex] = useState(selectedBook?.last_chapter_index || 0);
     const [isPlaying, setIsPlaying] = useState(false);
     const [language, setLanguage] = useState<'en' | 'vi'>('vi');
+
+    // Sync states
+    const [chunks, setChunks] = useState<string[]>([]);
+    const [activeChunkIndex, setActiveChunkIndex] = useState(-1);
+    const scrollViewRef = React.useRef<ScrollView>(null);
 
     useEffect(() => {
         if (selectedBook) {
@@ -22,10 +27,28 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
         };
     }, [selectedBook]);
 
+    // Save progress to DB when chapter changes
+    useEffect(() => {
+        if (selectedBook && currentChapterIndex >= 0 && currentChapterIndex !== selectedBook.last_chapter_index) {
+            databaseService.updateBookProgress(selectedBook.id, currentChapterIndex);
+            // Also update store to keep it in sync
+            useBookStore.getState().setSelectedBook({
+                ...selectedBook,
+                last_chapter_index: currentChapterIndex
+            });
+        }
+    }, [currentChapterIndex, selectedBook]);
+
     const loadChapters = async () => {
         try {
             const data = await databaseService.getChapters(Number(selectedBook!.id));
             setChapters(data);
+            if (data.length > 0) {
+                // Ensure index is within bounds (in case DB changed)
+                const safeIndex = Math.min(currentChapterIndex, data.length - 1);
+                setCurrentChapterIndex(safeIndex);
+                setChunks(audioService.chunkText(data[safeIndex].content, 300));
+            }
         } catch (err) {
             console.error('[PlayerScreen] Load Chapters Error:', err);
         }
@@ -43,9 +66,17 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
         if (isPlaying) {
             await audioService.stop();
             setIsPlaying(false);
+            setActiveChunkIndex(-1);
         } else {
             setIsPlaying(true);
-            await audioService.speak(currentChapter.content, language);
+            await audioService.speak(currentChapter.content, language, (index, total, currentChunks) => {
+                setChunks(currentChunks);
+                setActiveChunkIndex(index);
+                // Simple auto-scroll logic
+                if (scrollViewRef.current) {
+                    scrollViewRef.current.scrollTo({ y: index * 40, animated: true });
+                }
+            });
         }
     };
 
@@ -54,7 +85,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
         setLanguage(newLang);
         if (isPlaying) {
             await audioService.stop();
-            await audioService.speak(currentChapter.content, newLang);
+            handlePlayPause(); // Restart with new language
         }
     };
 
@@ -62,9 +93,12 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
         if (currentChapterIndex < chapters.length - 1) {
             const nextIndex = currentChapterIndex + 1;
             setCurrentChapterIndex(nextIndex);
+            setChunks(audioService.chunkText(chapters[nextIndex].content, 300));
+            setActiveChunkIndex(-1);
             if (isPlaying) {
                 await audioService.stop();
-                await audioService.speak(chapters[nextIndex].content, language);
+                setIsPlaying(false);
+                setTimeout(handlePlayPause, 100);
             }
         }
     };
@@ -73,9 +107,12 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
         if (currentChapterIndex > 0) {
             const prevIndex = currentChapterIndex - 1;
             setCurrentChapterIndex(prevIndex);
+            setChunks(audioService.chunkText(chapters[prevIndex].content, 300));
+            setActiveChunkIndex(-1);
             if (isPlaying) {
                 await audioService.stop();
-                await audioService.speak(chapters[prevIndex].content, language);
+                setIsPlaying(false);
+                setTimeout(handlePlayPause, 100);
             }
         }
     };
@@ -94,21 +131,44 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
             </View>
 
             <View style={styles.content}>
-                <View style={styles.coverContainer}>
-                    <Image source={{ uri: selectedBook.cover_uri }} style={styles.cover} />
+                <View style={[styles.coverContainer, isPlaying && { transform: [{ scale: 1.05 }] }]}>
+                    {selectedBook.cover_uri && selectedBook.cover_uri.trim() !== '' ? (
+                        <Image source={{ uri: selectedBook.cover_uri }} style={styles.cover} />
+                    ) : (
+                        <View style={[styles.cover, { backgroundColor: Colors.surface, justifyContent: 'center', alignItems: 'center' }]}>
+                            <BookOpen color={Colors.textSecondary} size={80} />
+                        </View>
+                    )}
                 </View>
 
                 <View style={styles.infoContainer}>
-                    <Text style={styles.title}>{selectedBook.title}</Text>
+                    <Text style={styles.title} numberOfLines={1}>{selectedBook.title}</Text>
                     <Text style={styles.author}>{selectedBook.author}</Text>
                     <Text style={styles.chapterTitle}>{currentChapter.title}</Text>
                 </View>
 
-                <ScrollView style={styles.textContainer} contentContainerStyle={styles.scrollContent}>
-                    <Text style={styles.contentText}>
-                        {currentChapter.content}
-                    </Text>
-                </ScrollView>
+                <View style={styles.readerWrapper}>
+                    <ScrollView
+                        ref={scrollViewRef}
+                        style={styles.textContainer}
+                        contentContainerStyle={styles.scrollContent}
+                        showsVerticalScrollIndicator={false}
+                    >
+                        {chunks.length > 0 ? chunks.map((chunk, idx) => (
+                            <Text
+                                key={idx}
+                                style={[
+                                    styles.contentText,
+                                    idx === activeChunkIndex && styles.activeText
+                                ]}
+                            >
+                                {chunk}
+                            </Text>
+                        )) : (
+                            <Text style={styles.contentText}>{currentChapter.content}</Text>
+                        )}
+                    </ScrollView>
+                </View>
 
                 <View style={styles.controls}>
                     <View style={styles.progressBar}>
@@ -215,21 +275,32 @@ const styles = StyleSheet.create({
         marginTop: 8,
         textTransform: 'uppercase',
     },
-    textContainer: {
+    readerWrapper: {
         flex: 1,
         width: '100%',
+        marginBottom: Spacing.lg,
         backgroundColor: Colors.surface,
         borderRadius: 12,
+        overflow: 'hidden',
+    },
+    textContainer: {
+        flex: 1,
         padding: Spacing.md,
-        marginBottom: Spacing.lg,
     },
     scrollContent: {
-        paddingBottom: 20,
+        paddingBottom: 40,
     },
     contentText: {
-        color: Colors.text,
-        fontSize: 16,
-        lineHeight: 24,
+        color: Colors.textSecondary,
+        fontSize: 18,
+        lineHeight: 28,
+        marginBottom: 12,
+    },
+    activeText: {
+        color: Colors.primary,
+        fontWeight: 'bold',
+        backgroundColor: 'rgba(52, 199, 89, 0.1)',
+        borderRadius: 4,
     },
     controls: {
         width: '100%',

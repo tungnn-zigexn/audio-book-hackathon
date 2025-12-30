@@ -6,7 +6,8 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "generate-db": "node scripts/generate-db.js"
   },
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",
@@ -30,6 +31,7 @@
   "private": true,
   "devDependencies": {
     "@types/react": "~19.1.10",
+    "better-sqlite3": "^12.5.0",
     "typescript": "~5.9.2"
   }
 }

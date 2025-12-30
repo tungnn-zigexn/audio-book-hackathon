@@ -4,21 +4,24 @@ import { Audio } from 'expo-av';
 class AudioService {
     private sound: Audio.Sound | null = null;
 
-    async speak(text: string, language: 'en' | 'vi') {
+    async speak(text: string, language: 'en' | 'vi', onChunkStart?: (index: number, total: number, chunks: string[]) => void) {
         try {
             console.log(`[AudioService] Using Local System TTS for ${language}`);
 
             // 1. Stop any existing playback
             await this.stop();
 
-            // 2. Split text into chunks (approx 500 chars each) to avoid engine truncation
-            const chunks = this.chunkText(text, 500);
+            // 2. Split text into chunks
+            const chunks = this.chunkText(text, 300); // Smaller chunks for better sync
             let currentChunkIndex = 0;
 
             const speakNext = () => {
                 if (currentChunkIndex < chunks.length) {
                     const chunk = chunks[currentChunkIndex];
-                    console.log(`[AudioService] Speaking chunk ${currentChunkIndex + 1}/${chunks.length}`);
+
+                    if (onChunkStart) {
+                        onChunkStart(currentChunkIndex, chunks.length, chunks);
+                    }
 
                     Speech.speak(chunk, {
                         language: language === 'en' ? 'en-US' : 'vi-VN',
@@ -47,12 +50,11 @@ class AudioService {
         }
     }
 
-    private chunkText(text: string, size: number): string[] {
+    public chunkText(text: string, size: number): string[] {
         const chunks: string[] = [];
-        let index = 0;
-
-        // Clean text: remove multiple spaces and non-printable chars
+        // Clean text but keep paragraph breaks for better chunking
         const cleanText = text.replace(/\s+/g, ' ').trim();
+        let index = 0;
 
         while (index < cleanText.length) {
             let endIndex = index + size;
@@ -62,7 +64,7 @@ class AudioService {
                 const lastSentence = cleanText.lastIndexOf('. ', endIndex);
                 const lastSpace = cleanText.lastIndexOf(' ', endIndex);
 
-                if (lastSentence > index + (size * 0.5)) {
+                if (lastSentence > index + (size * 0.4)) {
                     endIndex = lastSentence + 1;
                 } else if (lastSpace > index) {
                     endIndex = lastSpace;
