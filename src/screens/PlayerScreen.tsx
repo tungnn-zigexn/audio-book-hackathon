@@ -1,24 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-    StyleSheet, 
-    Text, 
-    View, 
-    TouchableOpacity, 
-    Image, 
-    ScrollView, 
-    Modal, 
+import {
+    StyleSheet,
+    Text,
+    View,
+    TouchableOpacity,
+    Image,
+    ScrollView,
+    Modal,
     Animated,
     ActivityIndicator,
     Alert
 } from 'react-native';
 import { Colors, Spacing } from '../constants/theme';
-import { 
-    Play, 
-    Pause, 
-    SkipForward, 
-    SkipBack, 
-    ArrowLeft, 
-    Languages, 
+import {
+    Play,
+    Pause,
+    SkipForward,
+    SkipBack,
+    ArrowLeft,
+    Languages,
     BookOpen,
     Mic,
     Gauge,
@@ -137,7 +137,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
     );
 
     const currentChapter = chapters[currentChapterIndex];
-    
+
     // Validate currentChapter
     if (!currentChapter) {
         return (
@@ -147,7 +147,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
             </View>
         );
     }
-    
+
     // Log để debug
     if (__DEV__) {
         console.log('[PlayerScreen] Current chapter index:', currentChapterIndex);
@@ -185,19 +185,20 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                 },
                 (msg) => setAIProgress(msg),
                 rIdx,
-                resumeMillis
+                resumeMillis,
+                currentChapter.id
             );
         } else {
             await audioService.speak(
-                currentChapter.content, 
-                language, 
+                currentChapter.content,
+                language,
                 (idx, tot, cks) => {
                     setChunks(cks);
                     setActiveChunkIndex(idx);
                     if (scrollViewRef.current) {
                         scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
                     }
-                }, 
+                },
                 rIdx,
                 speechRate
             );
@@ -205,27 +206,16 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
     };
 
     const handlePlayPause = async () => {
-        const actuallyPlaying = audioService.getIsPlaying();
-        
-        if (actuallyPlaying) {
-            // Nếu đang dùng AI voice và đang pause, thì resume
-            const state = audioService.getPlaybackState();
-            if (state.isPaused && state.isPlayingAI) {
-                await audioService.resume();
-                setIsPlaying(true);
-            } else {
-                await audioService.stop();
-                setIsPlaying(false);
-                setAIProgress('');
-                setActiveChunkIndex(-1);
-            }
+        if (isPlaying) {
+            await audioService.pause();
+            setIsPlaying(false);
+            setAIProgress('');
         } else {
-            // Đảm bảo có currentChapter và content
+            // Ensure currentChapter exists
             if (!currentChapter || !currentChapter.content) {
                 console.error('[PlayerScreen] No chapter content available');
                 return;
             }
-            
             await startPlayback();
         }
     };
@@ -265,14 +255,12 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
 
         // Update state first
         setSelectedAIVoice(voice);
-        
+
         if (wasPlaying) {
             console.log(`[PlayerScreen] Stopping current playback and restarting with voice ${voice} from ${currentPos}ms`);
             // Stop current playback
             await audioService.stop();
-            // Wait a bit to ensure everything is stopped
-            await new Promise(resolve => setTimeout(resolve, 150));
-            
+
             // Restart with new voice - pass voice directly to avoid state timing issues
             setIsPlaying(true);
             const rIdx = activeChunkIndex === -1 ? 0 : activeChunkIndex;
@@ -288,7 +276,8 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                 },
                 (msg) => setAIProgress(msg),
                 rIdx,
-                currentPos
+                currentPos,
+                currentChapter.id
             );
         }
     };
@@ -325,7 +314,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
     const handleVoiceCommand = async () => {
         setIsListening(true);
         setLastCommand(null);
-        
+
         try {
             const command = await voiceCommandProcessor.processVoiceCommand(3000);
             setIsListening(false);
@@ -341,7 +330,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
 
             // Đảm bảo audio mode được restore trước khi execute command
             await new Promise(resolve => setTimeout(resolve, 200));
-            
+
             await executeCommand(command);
         } catch (error: any) {
             setIsListening(false);
@@ -353,7 +342,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
     const executeCommand = async (command: VoiceCommand) => {
         // Sync isPlaying state với audioService
         const actuallyPlaying = audioService.getIsPlaying();
-        
+
         switch (command.intent) {
             case 'play':
                 if (!actuallyPlaying) {
@@ -530,9 +519,9 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
             <View style={styles.content}>
                 {/* Compact Header with Cover and Info */}
                 <View style={styles.topSection}>
-                    <Animated.View 
+                    <Animated.View
                         style={[
-                            styles.coverContainer, 
+                            styles.coverContainer,
                             isPlaying && { transform: [{ scale: 1.05 }] },
                             isListening && { transform: [{ scale: pulseAnim }] }
                         ]}
@@ -550,7 +539,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                         <Text style={styles.title} numberOfLines={2}>{selectedBook.title}</Text>
                         <Text style={styles.author} numberOfLines={1}>{selectedBook.author}</Text>
                         <Text style={styles.chapterTitle} numberOfLines={1}>{currentChapter.title}</Text>
-                        
+
                         {/* Speed Control - Compact */}
                         <View style={styles.speedControl}>
                             <TouchableOpacity onPress={handleSpeedDecrease} style={styles.speedButton}>
@@ -634,9 +623,9 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                             {isListening ? (
                                 <ActivityIndicator size="small" color={Colors.error} />
                             ) : (
-                                <Mic 
-                                    color={isListening ? Colors.error : Colors.text} 
-                                    size={24} 
+                                <Mic
+                                    color={isListening ? Colors.error : Colors.text}
+                                    size={24}
                                 />
                             )}
                             <Text style={[styles.actionButtonText, isListening && styles.actionButtonTextActive]}>
@@ -661,8 +650,8 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
             </View>
 
             {/* Summary Modal */}
-            <Modal 
-                visible={!!showSummary} 
+            <Modal
+                visible={!!showSummary}
                 transparent={true}
                 animationType="slide"
                 onRequestClose={() => setShowSummary(null)}
