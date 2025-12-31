@@ -36,6 +36,8 @@ import { OpenAIVoice } from '../services/OpenAIService';
 import { voiceCommandProcessor, VoiceCommand } from '../services/VoiceCommandProcessor';
 import { summarizationService } from '../services/SummarizationService';
 
+const VOICE_OPTIONS: OpenAIVoice[] = ['alloy', 'echo', 'onyx', 'nova', 'shimmer'];
+
 export default function PlayerScreen({ onBack }: { onBack: () => void }) {
     const { selectedBook } = useBookStore();
     const [chapters, setChapters] = useState<Chapter[]>([]);
@@ -59,7 +61,9 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
     // Sync states
     const [chunks, setChunks] = useState<string[]>([]);
     const [activeChunkIndex, setActiveChunkIndex] = useState(-1);
+    const [readerHeight, setReaderHeight] = useState(0);
     const scrollViewRef = useRef<ScrollView>(null);
+    const chunkLayouts = useRef<Record<number, { y: number, height: number }>>({});
 
     // Animations
     const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -123,7 +127,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
             if (data.length > 0) {
                 const safeIndex = Math.min(currentChapterIndex, data.length - 1);
                 setCurrentChapterIndex(safeIndex);
-                setChunks(audioService.chunkText(data[safeIndex].content, 300));
+                setChunks(audioService.chunkText(data[safeIndex].content, 500));
             }
         } catch (err) {
             console.error('[PlayerScreen] Load Chapters Error:', err);
@@ -131,7 +135,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
     };
 
     if (!selectedBook || chapters.length === 0) return (
-        <View style={styles.container}>
+        <View style={[styles.container, styles.centeredContainer]}>
             <ActivityIndicator size="large" color={Colors.primary} />
             <Text style={styles.loadingText}>Đang tải nội dung...</Text>
         </View>
@@ -142,7 +146,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
     // Validate currentChapter
     if (!currentChapter) {
         return (
-            <View style={styles.container}>
+            <View style={[styles.container, styles.centeredContainer]}>
                 <ActivityIndicator size="large" color={Colors.primary} />
                 <Text style={styles.loadingText}>Đang tải chương...</Text>
             </View>
@@ -155,6 +159,25 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
         // Remove any existing "Chương X" or "Chapter X" prefix from title and use our own numbering
         const cleanTitle = chapter.title.replace(/^(Chương|Chapter)\s+\d+[\s\-:]*/i, '').trim();
         return `Chương ${chapterNumber}${cleanTitle ? ' - ' + cleanTitle : ''}`;
+    };
+
+    const scrollToActiveChunk = (idx: number) => {
+        const layout = chunkLayouts.current[idx];
+        if (scrollViewRef.current && layout !== undefined && readerHeight > 0) {
+            // Target: Center the chunk in the readerHeight
+            // Formula: chunk.y - (readerHeight / 2) + (chunk.height / 2)
+            const targetY = layout.y - (readerHeight / 2) + (layout.height / 2);
+            scrollViewRef.current.scrollTo({
+                y: Math.max(0, targetY),
+                animated: true
+            });
+        } else if (scrollViewRef.current && layout !== undefined) {
+            // Fallback if readerHeight not yet measured
+            scrollViewRef.current.scrollTo({
+                y: Math.max(0, layout.y - 100),
+                animated: true
+            });
+        }
     };
 
     // Log để debug
@@ -190,7 +213,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                     setChunks(cks);
                     setActiveChunkIndex(idx);
                     if (scrollViewRef.current) {
-                        scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
+                        scrollToActiveChunk(idx);
                     }
                 },
                 (msg) => setAIProgress(msg),
@@ -206,7 +229,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                     setChunks(cks);
                     setActiveChunkIndex(idx);
                     if (scrollViewRef.current) {
-                        scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
+                        scrollToActiveChunk(idx);
                     }
                 },
                 rIdx,
@@ -241,6 +264,9 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
 
     const handleToggleAI = async () => {
         const nextMode = !useAIVoice;
+
+        // Since chunk sizes are now identical (500), we don't need to re-map indices.
+        // The activeChunkIndex remains valid for the current chunks list.
         setUseAIVoice(nextMode);
 
         // Stop current audio to reset engines
@@ -252,19 +278,19 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
     };
 
     const handleVoiceChange = async (voice: OpenAIVoice) => {
-        // Chỉ cho phép thay đổi voice khi đang dùng AI voice
+        // Cập nhật giọng chọn để UI bôi xanh kịp thời
+        setSelectedAIVoice(voice);
+
+        // Tự động chuyển sang chế độ AI nếu chưa bật
         if (!useAIVoice) {
-            console.warn('[PlayerScreen] Cannot change voice when not using AI voice');
-            return;
+            setUseAIVoice(true);
         }
 
         const state = audioService.getPlaybackState();
         const currentPos = state.lastPositionMillis;
         const wasPlaying = isPlaying;
-        console.log(`[PlayerScreen] Voice change requested from ${selectedAIVoice} to ${voice}. Capturing pos: ${currentPos}ms`);
 
-        // Update state first
-        setSelectedAIVoice(voice);
+        console.log(`[PlayerScreen] handleVoiceChange: sourcePos=${currentPos}ms, wasPlaying=${wasPlaying}`);
 
         if (wasPlaying) {
             console.log(`[PlayerScreen] Stopping current playback and restarting with voice ${voice} from ${currentPos}ms`);
@@ -281,7 +307,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                     setChunks(cks);
                     setActiveChunkIndex(idx);
                     if (scrollViewRef.current) {
-                        scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
+                        scrollToActiveChunk(idx);
                     }
                 },
                 (msg) => setAIProgress(msg),
@@ -323,7 +349,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
         }
 
         // Update chunks with new chapter content FIRST
-        const newChunks = audioService.chunkText(nextChapter.content, 300);
+        const newChunks = audioService.chunkText(nextChapter.content, 500);
         console.log(`[PlayerScreen] Updated chunks for chapter ${nextIndex + 1}, total chunks: ${newChunks.length}`);
 
         // Update state with new chapter - do this in a batch to ensure consistency
@@ -361,9 +387,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                         (idx, tot, cks) => {
                             setChunks(cks);
                             setActiveChunkIndex(idx);
-                            if (scrollViewRef.current) {
-                                scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
-                            }
+                            scrollToActiveChunk(idx);
                         },
                         (msg) => setAIProgress(msg),
                         rIdx,
@@ -376,16 +400,14 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                         (idx, tot, cks) => {
                             setChunks(cks);
                             setActiveChunkIndex(idx);
-                            if (scrollViewRef.current) {
-                                scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
-                            }
+                            scrollToActiveChunk(idx);
                         },
                         rIdx,
                         currentSpeechRate
                     );
                 }
                 setIsPlaying(true);
-            }, 200);
+            }, 500);
         }
     };
 
@@ -418,7 +440,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
         }
 
         // Update chunks with new chapter content FIRST
-        const newChunks = audioService.chunkText(prevChapter.content, 300);
+        const newChunks = audioService.chunkText(prevChapter.content, 500);
         console.log(`[PlayerScreen] Updated chunks for chapter ${prevIndex + 1}, total chunks: ${newChunks.length}`);
 
         // Update state with new chapter - do this in a batch to ensure consistency
@@ -456,9 +478,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                         (idx, tot, cks) => {
                             setChunks(cks);
                             setActiveChunkIndex(idx);
-                            if (scrollViewRef.current) {
-                                scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
-                            }
+                            scrollToActiveChunk(idx);
                         },
                         (msg) => setAIProgress(msg),
                         rIdx,
@@ -471,16 +491,14 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                         (idx, tot, cks) => {
                             setChunks(cks);
                             setActiveChunkIndex(idx);
-                            if (scrollViewRef.current) {
-                                scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
-                            }
+                            scrollToActiveChunk(idx);
                         },
                         rIdx,
                         currentSpeechRate
                     );
                 }
                 setIsPlaying(true);
-            }, 200);
+            }, 500);
         }
     };
 
@@ -499,13 +517,12 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                 return;
             }
 
-            setLastCommand(`Đã thực hiện lệnh!`);
-            setTimeout(() => setLastCommand(null), 3000);
-
             // Đảm bảo audio mode được restore trước khi execute command
-            await new Promise(resolve => setTimeout(resolve, 200));
-
+            await new Promise(resolve => setTimeout(resolve, 300));
             await executeCommand(command);
+
+            setLastCommand('Đã thực hiện lệnh!');
+            setTimeout(() => setLastCommand(null), 2500);
         } catch (error: any) {
             setIsListening(false);
             console.error('[PlayerScreen] Voice command error:', error);
@@ -549,9 +566,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                     await audioService.restartWithNewRate((index, total, currentChunks) => {
                         setChunks(currentChunks);
                         setActiveChunkIndex(index);
-                        if (scrollViewRef.current) {
-                            scrollViewRef.current.scrollTo({ y: index * 40, animated: true });
-                        }
+                        scrollToActiveChunk(index);
                     }, activeChunkIndex >= 0 ? activeChunkIndex : 0);
                 }
                 break;
@@ -597,45 +612,17 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
 
             case 'voice':
                 if (command.action === 'change') {
-                    // Random chọn một giọng khác với giọng hiện tại
-                    const availableVoices: OpenAIVoice[] = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
-                    const otherVoices = availableVoices.filter(v => v !== selectedAIVoice);
-                    if (otherVoices.length > 0) {
-                        const randomIndex = Math.floor(Math.random() * otherVoices.length);
-                        const newVoice = otherVoices[randomIndex];
-                        
-                        console.log(`[PlayerScreen] Changing voice from ${selectedAIVoice} to ${newVoice}`);
-                        
-                        if (!useAIVoice) {
-                            // Switch to AI voice if not already using it
-                            setUseAIVoice(true);
-                        }
+                    const current = selectedAIVoice;
+                    const others = VOICE_OPTIONS.filter(v => v !== current);
+                    if (others.length > 0) {
+                        const newVoice = others[Math.floor(Math.random() * others.length)];
+                        console.log(`[PlayerScreen] Voice command: Switching to ${newVoice}`);
+
+                        // Cập nhật state ngay lập tức để chắc chắn UI bôi xanh
                         setSelectedAIVoice(newVoice);
-                        
-                        // If currently playing, restart with new voice
-                        if (isPlaying && currentChapter) {
-                            const wasPlaying = isPlaying;
-                            await audioService.stop();
-                            if (wasPlaying) {
-                                setTimeout(async () => {
-                                    await audioService.speakWithOpenAI(
-                                        currentChapter.content,
-                                        newVoice,
-                                        (idx, tot, cks) => {
-                                            setChunks(cks);
-                                            setActiveChunkIndex(idx);
-                                            if (scrollViewRef.current) {
-                                                scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
-                                            }
-                                        },
-                                        (msg) => setAIProgress(msg),
-                                        activeChunkIndex >= 0 ? activeChunkIndex : 0,
-                                        0
-                                    );
-                                    setIsPlaying(true);
-                                }, 200);
-                            }
-                        }
+                        if (!useAIVoice) setUseAIVoice(true);
+
+                        await handleVoiceChange(newVoice);
                     }
                 }
                 break;
@@ -669,7 +656,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                     if (currentChapterIndex === chapterIndex) {
                         console.log('[PlayerScreen] Already at target chapter, refreshing UI');
                         // Still update chunks and reset scroll to ensure UI is fresh
-                        setChunks(audioService.chunkText(targetChapter.content, 300));
+                        setChunks(audioService.chunkText(targetChapter.content, 500));
                         setActiveChunkIndex(-1);
                         if (scrollViewRef.current) {
                             scrollViewRef.current.scrollTo({ y: 0, animated: false });
@@ -691,7 +678,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                     }
 
                     // Update chunks with new chapter content FIRST
-                    const newChunks = audioService.chunkText(targetChapter.content, 300);
+                    const newChunks = audioService.chunkText(targetChapter.content, 500);
                     console.log(`[PlayerScreen] Updated chunks for chapter ${chapterIndex + 1}, total chunks: ${newChunks.length}`);
 
                     // Update state with new chapter - do this in a batch to ensure consistency
@@ -724,9 +711,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                                     (idx, tot, cks) => {
                                         setChunks(cks);
                                         setActiveChunkIndex(idx);
-                                        if (scrollViewRef.current) {
-                                            scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
-                                        }
+                                        scrollToActiveChunk(idx);
                                     },
                                     (msg) => setAIProgress(msg),
                                     rIdx,
@@ -739,16 +724,14 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                                     (idx, tot, cks) => {
                                         setChunks(cks);
                                         setActiveChunkIndex(idx);
-                                        if (scrollViewRef.current) {
-                                            scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
-                                        }
+                                        scrollToActiveChunk(idx);
                                     },
                                     rIdx,
                                     speechRate
                                 );
                             }
                             setIsPlaying(true);
-                        }, 200);
+                        }, 300);
                     } else {
                         console.log(`[PlayerScreen] Chapter changed to ${chapterIndex + 1}, not playing`);
                     }
@@ -827,19 +810,25 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
             </View>
 
             {useAIVoice && (
-                <View style={styles.voiceSelector}>
-                    {['alloy', 'shimmer', 'nova', 'echo', 'onyx'].map((v) => (
-                        <TouchableOpacity
-                            key={v}
-                            onPress={() => handleVoiceChange(v as OpenAIVoice)}
-                            style={[styles.voiceOption, selectedAIVoice === v && styles.activeVoiceOption]}
-                        >
-                            <User color={selectedAIVoice === v ? Colors.background : Colors.textSecondary} size={16} />
-                            <Text style={[styles.voiceName, selectedAIVoice === v && { color: Colors.background }]}>
-                                {v.charAt(0).toUpperCase() + v.slice(1)}
-                            </Text>
-                        </TouchableOpacity>
-                    ))}
+                <View style={styles.voiceSelectorContainer}>
+                    <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.voiceSelectorScroll}
+                    >
+                        {VOICE_OPTIONS.map((v) => (
+                            <TouchableOpacity
+                                key={v}
+                                onPress={() => handleVoiceChange(v as OpenAIVoice)}
+                                style={[styles.voiceOption, selectedAIVoice === v && styles.activeVoiceOption]}
+                            >
+                                <User color={selectedAIVoice === v ? Colors.background : Colors.textSecondary} size={16} />
+                                <Text style={[styles.voiceName, selectedAIVoice === v && { color: Colors.background }]}>
+                                    {v.charAt(0).toUpperCase() + v.slice(1)}
+                                </Text>
+                            </TouchableOpacity>
+                        ))}
+                    </ScrollView>
                 </View>
             )}
 
@@ -884,24 +873,38 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                 </View>
 
                 {/* Expanded Text Reader */}
-                <View style={styles.readerWrapper}>
+                <View
+                    style={styles.readerWrapper}
+                    onLayout={(e) => setReaderHeight(e.nativeEvent.layout.height)}
+                >
                     <ScrollView
                         ref={scrollViewRef as any}
                         style={styles.textContainer}
                         contentContainerStyle={styles.scrollContent}
                         showsVerticalScrollIndicator={false}
                     >
-                        {chunks.length > 0 ? chunks.map((chunk, idx) => (
-                            <Text
-                                key={idx}
-                                style={[
-                                    styles.contentText,
-                                    idx === activeChunkIndex && styles.activeText
-                                ]}
-                            >
-                                {chunk}
-                            </Text>
-                        )) : (
+                        {chunks.length > 0 ? chunks.map((chunk, idx) => {
+                            const isActive = idx === activeChunkIndex;
+                            const isPast = idx < activeChunkIndex;
+                            return (
+                                <Text
+                                    key={idx}
+                                    onLayout={(e) => {
+                                        chunkLayouts.current[idx] = {
+                                            y: e.nativeEvent.layout.y,
+                                            height: e.nativeEvent.layout.height
+                                        };
+                                    }}
+                                    style={[
+                                        styles.contentText,
+                                        isActive && styles.activeText,
+                                        !isActive && activeChunkIndex !== -1 && { opacity: isPast ? 0.3 : 0.5 }
+                                    ]}
+                                >
+                                    {chunk}
+                                </Text>
+                            );
+                        }) : (
                             <Text style={styles.contentText}>{currentChapter.content}</Text>
                         )}
                     </ScrollView>
@@ -1012,6 +1015,10 @@ const styles = StyleSheet.create({
         marginTop: 20,
         fontSize: 16,
     },
+    centeredContainer: {
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
     header: {
         flexDirection: 'row',
         justifyContent: 'space-between',
@@ -1045,44 +1052,54 @@ const styles = StyleSheet.create({
     activeMiniBtn: {
         backgroundColor: Colors.primary,
     },
-    voiceSelector: {
-        flexDirection: 'row',
-        justifyContent: 'center',
-        paddingVertical: 10,
-        backgroundColor: 'rgba(255,255,255,0.05)',
+    voiceSelectorContainer: {
+        backgroundColor: Colors.glass,
+        borderBottomWidth: 1,
+        borderBottomColor: Colors.border,
+        paddingVertical: 12,
         marginBottom: 10,
+    },
+    voiceSelectorScroll: {
+        paddingHorizontal: 20,
+        gap: 12,
+        flexDirection: 'row',
     },
     voiceOption: {
         flexDirection: 'row',
         alignItems: 'center',
         backgroundColor: Colors.surface,
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        borderRadius: 15,
-        marginHorizontal: 4,
+        paddingHorizontal: 16,
+        paddingVertical: 8,
+        borderRadius: 20,
+        borderWidth: 1,
+        borderColor: Colors.border,
+        minWidth: 100,
+        justifyContent: 'center',
     },
     activeVoiceOption: {
         backgroundColor: Colors.primary,
+        borderColor: Colors.primary,
     },
     voiceName: {
         color: Colors.textSecondary,
         fontSize: 12,
         marginLeft: 4,
-        fontWeight: '500',
+        fontWeight: 'bold',
     },
     langButton: {
         flexDirection: 'row',
         alignItems: 'center',
         backgroundColor: Colors.surface,
-        paddingHorizontal: 10,
-        paddingVertical: 6,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
         borderRadius: 20,
         gap: 6,
+        borderWidth: 1,
+        borderColor: Colors.border,
     },
     langText: {
         color: Colors.primary,
-        marginLeft: 4,
-        fontWeight: 'bold',
+        fontWeight: '900',
         fontSize: 12,
     },
     content: {
@@ -1091,20 +1108,25 @@ const styles = StyleSheet.create({
     },
     topSection: {
         flexDirection: 'row',
-        alignItems: 'flex-start',
+        alignItems: 'center',
         marginBottom: Spacing.md,
         gap: Spacing.md,
+        backgroundColor: Colors.glass,
+        padding: Spacing.md,
+        borderRadius: 20,
+        borderWidth: 1,
+        borderColor: Colors.border,
     },
     coverContainer: {
-        width: 100,
-        height: 140,
+        width: 80,
+        height: 110,
         borderRadius: 12,
         overflow: 'hidden',
         elevation: 8,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 3 },
-        shadowOpacity: 0.25,
-        shadowRadius: 4,
+        shadowColor: Colors.primary,
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 10,
         flexShrink: 0,
     },
     cover: {
@@ -1114,40 +1136,41 @@ const styles = StyleSheet.create({
     },
     infoContainer: {
         flex: 1,
-        justifyContent: 'flex-start',
-        paddingTop: Spacing.xs,
+        justifyContent: 'center',
     },
     title: {
         color: Colors.text,
         fontSize: 18,
-        fontWeight: 'bold',
-        marginBottom: 4,
-        lineHeight: 24,
+        fontWeight: '900',
+        marginBottom: 2,
+        lineHeight: 22,
     },
     author: {
         color: Colors.textSecondary,
         fontSize: 13,
-        marginBottom: 6,
+        marginBottom: 4,
+        fontWeight: '500',
     },
     chapterTitle: {
         color: Colors.primary,
         fontSize: 11,
-        fontWeight: '600',
-        marginBottom: Spacing.sm,
+        fontWeight: 'bold',
+        marginBottom: 8,
         textTransform: 'uppercase',
-        letterSpacing: 0.5,
+        letterSpacing: 1,
     },
     speedControl: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'flex-start',
-        backgroundColor: Colors.surface,
-        paddingHorizontal: Spacing.sm,
+        backgroundColor: Colors.background,
+        paddingHorizontal: 10,
         paddingVertical: 4,
-        borderRadius: 16,
+        borderRadius: 12,
         alignSelf: 'flex-start',
-        gap: Spacing.xs,
-        marginTop: 4,
+        gap: 8,
+        borderWidth: 1,
+        borderColor: Colors.border,
     },
     speedButton: {
         padding: 2,
@@ -1156,11 +1179,10 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 4,
-        paddingHorizontal: Spacing.xs,
     },
     speedText: {
         color: Colors.primary,
-        fontSize: 13,
+        fontSize: 12,
         fontWeight: 'bold',
     },
     readerWrapper: {
@@ -1168,111 +1190,106 @@ const styles = StyleSheet.create({
         width: '100%',
         marginBottom: Spacing.md,
         backgroundColor: Colors.surface,
-        borderRadius: 16,
+        borderRadius: 24,
         overflow: 'hidden',
         borderWidth: 1,
-        borderColor: 'rgba(56, 189, 248, 0.1)',
+        borderColor: Colors.border,
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 8,
-        elevation: 3,
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.3,
+        shadowRadius: 15,
+        elevation: 10,
     },
     textContainer: {
         flex: 1,
-        padding: Spacing.lg,
+        padding: Spacing.md,
     },
     scrollContent: {
-        paddingBottom: 60,
+        paddingBottom: 100,
     },
     contentText: {
         color: Colors.text,
-        fontSize: 18,
-        lineHeight: 32,
-        marginBottom: 16,
-        letterSpacing: 0.3,
+        fontSize: 19,
+        lineHeight: 34,
+        marginBottom: 20,
+        letterSpacing: 0.2,
+        fontWeight: '400',
     },
     activeText: {
         color: Colors.primary,
-        fontWeight: '700',
-        backgroundColor: 'rgba(56, 189, 248, 0.2)',
-        padding: 12,
-        borderRadius: 8,
-        borderLeftWidth: 3,
+        fontWeight: 'bold',
+        backgroundColor: 'rgba(56, 189, 248, 0.15)',
+        padding: 16,
+        borderRadius: 16,
+        borderLeftWidth: 4,
         borderLeftColor: Colors.primary,
-        shadowColor: Colors.primary,
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.2,
-        shadowRadius: 4,
-        elevation: 2,
+        marginVertical: 4,
     },
     commandFeedback: {
-        backgroundColor: Colors.surface,
-        paddingHorizontal: Spacing.md,
-        paddingVertical: Spacing.sm,
-        borderRadius: 8,
-        marginBottom: Spacing.sm,
-        width: '100%',
+        position: 'absolute',
+        top: '50%',
+        alignSelf: 'center',
+        backgroundColor: 'rgba(34, 197, 94, 0.9)',
+        paddingHorizontal: 20,
+        paddingVertical: 10,
+        borderRadius: 20,
+        zIndex: 1000,
     },
     commandText: {
-        color: Colors.success,
-        fontSize: 12,
-        textAlign: 'center',
+        color: '#FFF',
+        fontSize: 14,
+        fontWeight: 'bold',
     },
     controls: {
         width: '100%',
-        paddingBottom: 20,
+        paddingBottom: 10,
     },
     progressBar: {
-        height: 8,
+        height: 6,
         backgroundColor: Colors.surface,
-        borderRadius: 4,
-        marginBottom: Spacing.lg,
+        borderRadius: 3,
+        marginBottom: Spacing.md,
         overflow: 'hidden',
         borderWidth: 1,
-        borderColor: 'rgba(56, 189, 248, 0.2)',
+        borderColor: Colors.border,
     },
     progressFill: {
         height: '100%',
         backgroundColor: Colors.primary,
-        borderRadius: 4,
-        shadowColor: Colors.primary,
-        shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 0.6,
-        shadowRadius: 4,
+        borderRadius: 3,
     },
     btnRow: {
         flexDirection: 'row',
-        justifyContent: 'space-evenly',
+        justifyContent: 'center',
         alignItems: 'center',
         marginBottom: Spacing.md,
+        gap: 40,
     },
     navButton: {
         padding: Spacing.sm,
     },
     playBtn: {
-        width: 72,
-        height: 72,
-        borderRadius: 36,
+        width: 80,
+        height: 80,
+        borderRadius: 40,
         backgroundColor: Colors.primary,
         justifyContent: 'center',
         alignItems: 'center',
-        elevation: 8,
+        elevation: 12,
         shadowColor: Colors.primary,
-        shadowOffset: { width: 0, height: 6 },
+        shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.5,
-        shadowRadius: 12,
-        borderWidth: 3,
-        borderColor: 'rgba(56, 189, 248, 0.3)',
+        shadowRadius: 15,
+        borderWidth: 4,
+        borderColor: 'rgba(255, 255, 255, 0.2)',
     },
     playBtnActive: {
         backgroundColor: Colors.accent,
-        borderColor: 'rgba(129, 140, 248, 0.3)',
-        transform: [{ scale: 1.05 }],
+        shadowColor: Colors.accent,
     },
     actionRow: {
         flexDirection: 'row',
-        justifyContent: 'space-around',
+        justifyContent: 'center',
         gap: Spacing.md,
     },
     voiceButton: {
@@ -1281,21 +1298,15 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
         backgroundColor: Colors.surface,
-        paddingVertical: Spacing.sm,
-        paddingHorizontal: Spacing.md,
-        borderRadius: 12,
-        gap: 6,
+        paddingVertical: 14,
+        borderRadius: 16,
+        gap: 8,
         borderWidth: 1,
-        borderColor: 'rgba(56, 189, 248, 0.2)',
+        borderColor: Colors.border,
     },
     voiceButtonActive: {
-        backgroundColor: 'rgba(239, 68, 68, 0.15)',
-        borderWidth: 2,
+        backgroundColor: 'rgba(239, 68, 68, 0.1)',
         borderColor: Colors.error,
-        shadowColor: Colors.error,
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.3,
-        shadowRadius: 4,
     },
     summaryButton: {
         flex: 1,
@@ -1303,32 +1314,34 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
         backgroundColor: Colors.surface,
-        paddingVertical: Spacing.sm,
-        paddingHorizontal: Spacing.md,
-        borderRadius: 12,
-        gap: 6,
+        paddingVertical: 14,
+        borderRadius: 16,
+        gap: 8,
         borderWidth: 1,
-        borderColor: 'rgba(56, 189, 248, 0.2)',
+        borderColor: Colors.border,
     },
     actionButtonText: {
         color: Colors.text,
-        fontSize: 12,
-        fontWeight: '600',
+        fontSize: 14,
+        fontWeight: 'bold',
+        letterSpacing: 0.5,
     },
     actionButtonTextActive: {
         color: Colors.error,
     },
     modalOverlay: {
         flex: 1,
-        backgroundColor: 'rgba(0, 0, 0, 0.7)',
+        backgroundColor: 'rgba(0, 0, 0, 0.85)',
         justifyContent: 'flex-end',
     },
     modalContent: {
         backgroundColor: Colors.surface,
-        borderTopLeftRadius: 24,
-        borderTopRightRadius: 24,
-        maxHeight: '80%',
+        borderTopLeftRadius: 32,
+        borderTopRightRadius: 32,
+        maxHeight: '85%',
         paddingTop: Spacing.lg,
+        borderWidth: 1,
+        borderColor: Colors.border,
     },
     modalHeader: {
         flexDirection: 'row',
@@ -1337,20 +1350,20 @@ const styles = StyleSheet.create({
         paddingHorizontal: Spacing.lg,
         paddingBottom: Spacing.md,
         borderBottomWidth: 1,
-        borderBottomColor: Colors.background,
+        borderBottomColor: Colors.glass,
     },
     modalTitle: {
         color: Colors.text,
-        fontSize: 20,
-        fontWeight: 'bold',
+        fontSize: 22,
+        fontWeight: '900',
     },
     modalBody: {
         padding: Spacing.lg,
-        maxHeight: 500,
     },
     summaryText: {
         color: Colors.text,
-        fontSize: 16,
-        lineHeight: 24,
+        fontSize: 17,
+        lineHeight: 28,
+        textAlign: 'justify',
     },
 });

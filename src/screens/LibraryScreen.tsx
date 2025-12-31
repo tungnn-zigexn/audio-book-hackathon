@@ -7,6 +7,7 @@ import { ActivityIndicator } from 'react-native';
 import { databaseService, Book } from '../services/DatabaseService';
 import { useBookStore } from '../store/useBookStore';
 import { bookImportService } from '../services/BookImportService';
+import { coverImageService } from '../services/CoverImageService';
 
 export default function LibraryScreen({ onSelectBook }: { onSelectBook: () => void }) {
     console.log('[LibraryScreen] LibraryScreen rendered');
@@ -16,8 +17,26 @@ export default function LibraryScreen({ onSelectBook }: { onSelectBook: () => vo
     const [isImporting, setIsImporting] = useState(false);
 
     useEffect(() => {
-        loadBooks();
+        const init = async () => {
+            const books = await databaseService.getBooks();
+            setDbBooks(books);
+            triggerBatchCoverGeneration(books);
+        };
+        init();
     }, []);
+
+    const triggerBatchCoverGeneration = async (books: Book[]) => {
+        const booksMissingCover = books.filter(b => !b.cover_uri || b.cover_uri === '');
+        if (booksMissingCover.length > 0) {
+            console.log(`[LibraryScreen] Found ${booksMissingCover.length} books missing covers. Generating...`);
+            for (const book of booksMissingCover) {
+                // Run in sequence but don't block UI
+                await coverImageService.generateForBook(book.id, book.title, book.author || 'Chưa rõ');
+            }
+            // Reload books to show new covers
+            loadBooks();
+        }
+    };
 
     const loadBooks = async () => {
         try {
@@ -135,6 +154,8 @@ export default function LibraryScreen({ onSelectBook }: { onSelectBook: () => vo
             <FlatList
                 data={filteredBooks}
                 keyExtractor={(item) => item.id.toString()}
+                numColumns={2}
+                columnWrapperStyle={styles.columnWrapper}
                 contentContainerStyle={styles.list}
                 renderItem={({ item }) => (
                     <TouchableOpacity
@@ -149,14 +170,14 @@ export default function LibraryScreen({ onSelectBook }: { onSelectBook: () => vo
                             </View>
                         )}
                         <View style={styles.bookInfo}>
-                            <Text style={styles.bookTitle} numberOfLines={1}>{item.title}</Text>
-                            <Text style={styles.bookAuthor}>{item.author}</Text>
+                            <Text style={styles.bookTitle} numberOfLines={2}>{item.title}</Text>
+                            <Text style={styles.bookAuthor} numberOfLines={1}>{item.author}</Text>
                         </View>
                         <TouchableOpacity
                             style={styles.deleteButton}
                             onPress={() => handleDeleteBook(item)}
                         >
-                            <Trash2 color={Colors.textSecondary} size={20} />
+                            <Trash2 color={Colors.textSecondary} size={16} />
                         </TouchableOpacity>
                     </TouchableOpacity>
                 )}
@@ -168,6 +189,7 @@ export default function LibraryScreen({ onSelectBook }: { onSelectBook: () => vo
 const styles = StyleSheet.create({
     container: {
         flex: 1,
+        backgroundColor: Colors.background,
         paddingTop: 60,
     },
     header: {
@@ -187,6 +209,7 @@ const styles = StyleSheet.create({
         fontSize: 32,
         fontWeight: 'bold',
         color: Colors.text,
+        letterSpacing: -0.5,
     },
     searchBar: {
         flexDirection: 'row',
@@ -195,8 +218,10 @@ const styles = StyleSheet.create({
         marginHorizontal: Spacing.lg,
         paddingHorizontal: Spacing.md,
         borderRadius: 12,
-        height: 50,
+        height: 48,
         marginBottom: Spacing.lg,
+        borderWidth: 1,
+        borderColor: Colors.border,
     },
     searchInput: {
         flex: 1,
@@ -205,46 +230,62 @@ const styles = StyleSheet.create({
         fontSize: 16,
     },
     list: {
-        paddingHorizontal: Spacing.lg,
+        paddingHorizontal: Spacing.md,
+        paddingBottom: 40,
+    },
+    columnWrapper: {
+        justifyContent: 'space-between',
     },
     bookCard: {
-        flexDirection: 'row',
+        width: '48%',
         backgroundColor: Colors.surface,
-        borderRadius: 12,
-        padding: Spacing.md,
+        borderRadius: 16,
+        padding: Spacing.sm,
         marginBottom: Spacing.md,
+        borderWidth: 1,
+        borderColor: Colors.border,
+        elevation: 4,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.2,
+        shadowRadius: 8,
     },
     coverImage: {
-        width: 60,
-        height: 80,
-        borderRadius: 8,
+        width: '100%',
+        aspectRatio: 3 / 4,
+        borderRadius: 12,
+        backgroundColor: Colors.glass,
     },
     coverPlaceholder: {
-        width: 60,
-        height: 80,
-        backgroundColor: Colors.background,
-        borderRadius: 8,
+        width: '100%',
+        aspectRatio: 3 / 4,
+        backgroundColor: Colors.glass,
+        borderRadius: 12,
         justifyContent: 'center',
         alignItems: 'center',
     },
     bookInfo: {
-        marginLeft: Spacing.md,
-        justifyContent: 'center',
-        flex: 1, // Allow info to take remaining space
+        marginTop: Spacing.sm,
+        paddingHorizontal: 4,
     },
     bookTitle: {
-        fontSize: 18,
-        fontWeight: '600',
+        fontSize: 15,
+        fontWeight: '700',
         color: Colors.text,
-        marginBottom: 4,
+        marginBottom: 2,
+        lineHeight: 20,
     },
     bookAuthor: {
-        fontSize: 14,
+        fontSize: 12,
         color: Colors.textSecondary,
+        fontWeight: '500',
     },
     deleteButton: {
-        justifyContent: 'center',
-        paddingLeft: Spacing.md,
-        paddingRight: Spacing.xs,
+        position: 'absolute',
+        top: Spacing.xs,
+        right: Spacing.xs,
+        backgroundColor: 'rgba(15, 23, 42, 0.6)',
+        padding: 6,
+        borderRadius: 12,
     },
 });

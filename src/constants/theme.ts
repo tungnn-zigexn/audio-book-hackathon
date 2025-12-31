@@ -7,6 +7,8 @@ export const Colors = {
     textSecondary: '#94A3B8', // Slate 400
     error: '#EF4444',
     success: '#22C55E',
+    glass: 'rgba(255, 255, 255, 0.05)',
+    border: 'rgba(56, 189, 248, 0.15)',
 };
 
 export const Spacing = {

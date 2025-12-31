@@ -22,8 +22,11 @@ class AudioService {
     private currentVolume: number = 1.0; // Âm lượng hiện tại (0.0 - 1.0)
     private isPlaying: boolean = false;
     private currentLanguage: 'en' | 'vi' = 'vi';
+    private currentChunks: string[] = [];
     private currentText: string = '';
+    private currentChunkSize: number = 0;
     private currentIndex: number = 0;
+    private currentSubIndex: number = 0; // Tracks progress within a single chunk (for local TTS speed control)
     private currentOnChunkStart?: (index: number, total: number, chunks: string[]) => void;
 
     async speak(
@@ -31,15 +34,14 @@ class AudioService {
         language: 'en' | 'vi',
         onChunkStart?: (index: number, total: number, chunks: string[]) => void,
         startIndex: number = 0,
-        rate?: number
+        rate?: number,
+        startSubIndex: number = 0
     ) {
         this.isPlayingAI = false;
         try {
             const speechRate = rate ?? this.currentRate;
             this.currentRate = speechRate;
             this.currentLanguage = language;
-            this.currentText = text;
-            this.currentIndex = startIndex;
             this.currentOnChunkStart = onChunkStart;
 
             console.log(`[AudioService] Using Local System TTS for ${language} at rate ${speechRate} from chunk ${startIndex}`);
@@ -55,65 +57,80 @@ class AudioService {
             // 2. Stop any existing playback
             await this.stop();
 
-            // 3. Split text into chunks
-            const chunks = this.chunkText(text, 300);
+            // 3. Split text into chunks if not already split or text changed (OR size changed)
+            if (this.currentText !== text || this.currentChunks.length === 0 || this.currentChunkSize !== 500) {
+                // Unified size: 500 is the user preference for AI and now Local too.
+                this.currentChunks = this.chunkText(text, 500);
+                this.currentText = text;
+                this.currentChunkSize = 500;
+            }
+
+            const chunks = this.currentChunks;
             let currentChunkIndex = startIndex;
+            let currentSubChunkIndex = startSubIndex;
 
             const speakNext = () => {
                 if (currentChunkIndex < chunks.length && !this.isPlayingAI) {
                     const chunk = chunks[currentChunkIndex];
-                    if (onChunkStart) {
+
+                    // Further split the 500-char chunk into sentences for better speed-change responsiveness
+                    const subChunks = this.chunkText(chunk, 100);
+
+                    if (onChunkStart && currentSubChunkIndex === 0) {
                         onChunkStart(currentChunkIndex, chunks.length, chunks);
                     }
 
-                    // Set audio mode before speaking (non-blocking)
-                    Audio.setAudioModeAsync({
-                        allowsRecordingIOS: false,
-                        playsInSilentModeIOS: true,
-                        staysActiveInBackground: false,
-                        shouldDuckAndroid: true,
-                    }).catch(e => {
-                        console.warn('[AudioService] Audio mode set warning:', e);
-                    });
-
-                    // Determine language code - thử nhiều options cho tiếng Việt
-                    let langCode: string;
-                    if (language === 'en') {
-                        langCode = 'en-US';
-                    } else {
-                        // iOS thường dùng 'vi-VN', Android có thể dùng 'vi'
-                        langCode = 'vi-VN'; // iOS thường cần 'vi-VN'
-                    }
-
-                    console.log(`[AudioService] Using language code: ${langCode} for language: ${language}`);
-
-                    Speech.speak(chunk, {
-                        language: langCode,
-                        pitch: 1.0,
-                        rate: speechRate,
-                        volume: this.currentVolume, // Sử dụng volume hiện tại
-                        onStart: () => {
-                            console.log(`[AudioService] Speaking chunk ${currentChunkIndex + 1}/${chunks.length} with language ${langCode}`);
-                        },
-                        onDone: () => {
-                            currentChunkIndex++;
+                    const speakSubChunk = () => {
+                        if (currentSubChunkIndex < subChunks.length && !this.isPlayingAI) {
+                            const subChunk = subChunks[currentSubChunkIndex];
                             this.currentIndex = currentChunkIndex;
-                            speakNext();
-                        },
-                        onStopped: () => {
-                            console.log('[AudioService] Speech stopped');
-                            this.isPlaying = false;
-                        },
-                        onError: (error) => {
-                            console.error('[AudioService] Speech Error:', error);
-                            this.isPlaying = false;
-                        }
-                    });
+                            this.currentSubIndex = currentSubChunkIndex;
 
-                    this.isPlaying = true;
+                            // Set audio mode before speaking
+                            Audio.setAudioModeAsync({
+                                allowsRecordingIOS: false,
+                                playsInSilentModeIOS: true,
+                                staysActiveInBackground: false,
+                                shouldDuckAndroid: true,
+                            }).catch(e => console.warn('[AudioService] Audio mode set warning:', e));
+
+                            let langCode = language === 'en' ? 'en-US' : 'vi-VN';
+
+                            Speech.speak(subChunk, {
+                                language: langCode,
+                                pitch: 1.0,
+                                rate: speechRate,
+                                volume: this.currentVolume, // Use current volume
+                                onStart: () => {
+                                    console.log(`[AudioService] Speaking chunk ${currentChunkIndex + 1}, sub ${currentSubChunkIndex + 1}/${subChunks.length}`);
+                                },
+                                onDone: () => {
+                                    currentSubChunkIndex++;
+                                    speakSubChunk();
+                                },
+                                onStopped: () => {
+                                    console.log('[AudioService] Speech stopped');
+                                    this.isPlaying = false;
+                                },
+                                onError: (error) => {
+                                    console.error('[AudioService] Speech Error:', error);
+                                    this.isPlaying = false;
+                                }
+                            });
+                            this.isPlaying = true;
+                        } else if (currentSubChunkIndex >= subChunks.length) {
+                            // Finished all sub-chunks, move to next main chunk
+                            currentChunkIndex++;
+                            currentSubChunkIndex = 0; // Reset sub-index
+                            speakNext();
+                        }
+                    };
+
+                    speakSubChunk();
                 } else {
                     console.log('[AudioService] Finished reading all chunks');
                     this.isPlaying = false;
+                    this.currentSubIndex = 0;
                 }
             };
 
@@ -191,10 +208,11 @@ class AudioService {
      */
     async restartWithNewRate(onChunkStart?: (index: number, total: number, chunks: string[]) => void, startIndex: number = 0) {
         if (this.currentText && !this.isPlayingAI) {
-            const wasPlaying = this.isPlaying;
+            const wasPlaying = this.getIsPlaying();
             await this.stop();
             if (wasPlaying) {
-                await this.speak(this.currentText, this.currentLanguage, onChunkStart, startIndex, this.currentRate);
+                console.log(`[AudioService] Restarting local TTS from chunk ${startIndex} sub-chunk ${this.currentSubIndex} at rate ${this.currentRate}`);
+                await this.speak(this.currentText, this.currentLanguage, onChunkStart, startIndex, this.currentRate, this.currentSubIndex);
             }
         }
     }
@@ -244,7 +262,15 @@ class AudioService {
             });
 
             if (onProgress) onProgress('Đang chuẩn bị giọng đọc AI...');
-            const chunks = this.chunkText(text, 500);
+
+            if (this.currentText !== text || this.currentChunks.length === 0 || this.currentChunkSize !== 500) {
+                // OpenAI can handle longer chunks effectively. 500 is user preference.
+                this.currentChunks = this.chunkText(text, 500);
+                this.currentText = text;
+                this.currentChunkSize = 500;
+            }
+
+            const chunks = this.currentChunks;
             let currentIdx = startIndex;
 
             const fetchVoiceChunk = async (idx: number, v: OpenAIVoice): Promise<string | undefined> => {
@@ -399,28 +425,43 @@ class AudioService {
     }
 
     public chunkText(text: string, size: number): string[] {
-        console.log(`[AudioService] Chunking text of length: ${text?.length}, size: ${size}`);
+        console.log(`[AudioService] Chunking text of length: ${text?.length}, target size: ${size}`);
         if (!text) return [];
-        const chunks: string[] = [];
-        const cleanText = text.replace(/\s+/g, ' ').trim();
-        let index = 0;
 
-        while (index < cleanText.length) {
-            let endIndex = index + size;
-            if (endIndex < cleanText.length) {
-                const lastSentence = cleanText.lastIndexOf('. ', endIndex);
-                const lastSpace = cleanText.lastIndexOf(' ', endIndex);
-                if (lastSentence > index + (size * 0.4)) {
-                    endIndex = lastSentence + 1;
-                } else if (lastSpace > index) {
-                    endIndex = lastSpace;
+        const cleanText = text.replace(/\s+/g, ' ').trim();
+        const chunks: string[] = [];
+
+        // Use regex for smarter sentence splitting
+        // This splits at . ? ! followed by a space or end of string, keeping the punctuation
+        const sentences = cleanText.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g) || [cleanText];
+
+        let currentChunk = "";
+
+        for (const sentence of sentences) {
+            const trimmedSentence = sentence.trim();
+            if (!trimmedSentence) continue;
+
+            // If adding this sentence exceeds size AND currentChunk is not empty, push currentChunk
+            if (currentChunk.length + trimmedSentence.length > size && currentChunk.length > 0) {
+                chunks.push(currentChunk.trim());
+                currentChunk = trimmedSentence;
+            } else {
+                currentChunk = (currentChunk ? currentChunk + " " : "") + trimmedSentence;
+
+                // If the sentence itself is very long, we might need to break it further
+                if (currentChunk.length >= size) {
+                    chunks.push(currentChunk.trim());
+                    currentChunk = "";
                 }
             }
-            chunks.push(cleanText.substring(index, endIndex).trim());
-            index = endIndex;
         }
+
+        if (currentChunk) {
+            chunks.push(currentChunk.trim());
+        }
+
         const result = chunks.filter(c => c.length > 0);
-        console.log(`[AudioService] Created ${result.length} chunks`);
+        console.log(`[AudioService] Created ${result.length} smart chunks`);
         return result;
     }
 
@@ -461,8 +502,8 @@ class AudioService {
                 this.isPlaying = true;
             } else if (Platform.OS === 'android' && !this.sound && this.currentText) {
                 // On Android, system Speech doesn't support resume. Restart from current index.
-                console.log(`[AudioService] Android Local Resume: Restarting from chunk ${this.currentIndex}`);
-                await this.speak(this.currentText, this.currentLanguage, this.currentOnChunkStart, this.currentIndex);
+                // We'll need the index from the PlayerScreen state or track it globally.
+                // For now, restarting is the only option on Android local TTS.
             }
         } catch (error) {
             console.error('[AudioService] Resume error:', error);

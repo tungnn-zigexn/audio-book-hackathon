@@ -125,7 +125,7 @@ class DatabaseService {
         await this.init();
         return await this.db!.getAllAsync<Chapter>(
             'SELECT * FROM chapters WHERE book_id = ? ORDER BY order_index ASC',
-            [bookId]
+            bookId
         );
     }
 
@@ -167,6 +167,15 @@ class DatabaseService {
         );
     }
 
+    async updateBookCover(bookId: number, coverUri: string) {
+        await this.init();
+        await this.db!.runAsync(
+            'UPDATE books SET cover_uri = ? WHERE id = ?',
+            coverUri,
+            bookId
+        );
+    }
+
     /**
      * Get cached audio URI if exists
      */
@@ -174,7 +183,7 @@ class DatabaseService {
         await this.init();
         const row = await this.db!.getFirstAsync<{data: Uint8Array}>(
             'SELECT data FROM audio_cache WHERE chapter_id = ? AND chunk_index = ? AND voice = ?',
-            [chapterId, chunkIndex, voice]
+            chapterId, chunkIndex, voice
         );
 
         if (row && row.data) {
@@ -204,21 +213,26 @@ class DatabaseService {
      * Limit to 2 voices per chunk
      */
     async saveCachedAudio(chapterId: number, chunkIndex: number, voice: string, sourceUri: string): Promise<string | null> {
+        if (!sourceUri || !chapterId) {
+            console.warn('[DatabaseService] saveCachedAudio: Missing required data', { chapterId, sourceUri });
+            return null;
+        }
+
         await this.init();
 
         try {
             // 1. Check current voice count for this chunk
             const countRow = await this.db!.getFirstAsync<{c: number}>(
                 'SELECT COUNT(DISTINCT voice) as c FROM audio_cache WHERE chapter_id = ? AND chunk_index = ?',
-                [chapterId, chunkIndex]
+                chapterId, chunkIndex
             );
 
             const voiceCount = countRow?.c || 0;
 
             // 2. If already have 2 different voices AND this is a NEW voice, don't persist
-            const existingVoice = await this.db!.getFirstAsync(
+            const existingVoice = await this.db!.getFirstAsync<{id: number}>(
                 'SELECT id FROM audio_cache WHERE chapter_id = ? AND chunk_index = ? AND voice = ?',
-                [chapterId, chunkIndex, voice]
+                chapterId, chunkIndex, voice
             );
 
             if (voiceCount >= 2 && !existingVoice) {
@@ -234,12 +248,12 @@ class DatabaseService {
             if (existingVoice) {
                 await this.db!.runAsync(
                     'UPDATE audio_cache SET data = ? WHERE chapter_id = ? AND chunk_index = ? AND voice = ?',
-                    [binaryData, chapterId, chunkIndex, voice]
+                    binaryData, chapterId, chunkIndex, voice
                 );
             } else {
                 await this.db!.runAsync(
                     'INSERT INTO audio_cache (chapter_id, chunk_index, voice, data) VALUES (?, ?, ?, ?)',
-                    [chapterId, chunkIndex, voice, binaryData]
+                    chapterId, chunkIndex, voice, binaryData
                 );
             }
 
