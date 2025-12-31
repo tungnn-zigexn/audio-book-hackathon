@@ -10,6 +10,7 @@ class OpenAIService {
     private readonly TTS_URL = 'https://api.openai.com/v1/audio/speech';
     private readonly WHISPER_URL = 'https://api.openai.com/v1/audio/transcriptions';
     private readonly CHAT_URL = 'https://api.openai.com/v1/chat/completions';
+    private readonly IMAGE_GEN_URL = 'https://api.openai.com/v1/images/generations';
 
     /**
      * Synthesize speech using OpenAI TTS (for AI voice feature)
@@ -106,6 +107,51 @@ class OpenAIService {
                 console.error('[OpenAIService] Whisper Error:', error.response?.data || error.message);
             }
             throw error;
+        }
+    }
+
+    /**
+     * Generate an image using DALL-E 3
+     * Returns a local URI to the generated image
+     */
+    async generateImage(prompt: string): Promise<string> {
+        try {
+            if (!OPENAI_API_KEY) {
+                throw new Error('OpenAI API key not configured');
+            }
+
+            console.log(`[OpenAIService] Generating image with DALL-E 3... Prompt: ${prompt.substring(0, 50)}...`);
+
+            const response = await axios.post(
+                this.IMAGE_GEN_URL,
+                {
+                    model: 'dall-e-3',
+                    prompt: prompt,
+                    n: 1,
+                    size: '1024x1024',
+                    quality: 'standard',
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${OPENAI_API_KEY}`,
+                        'Content-Type': 'application/json',
+                    },
+                    timeout: 60000, // 60 seconds (image gen takes time)
+                }
+            );
+
+            const imageUrl = response.data.data[0].url;
+            console.log('[OpenAIService] Image generated successfully. Downloading...');
+
+            // Download to local storage
+            const filename = `${FileSystem.documentDirectory}cover_${Date.now()}.png`;
+            const downloadResult = await FileSystem.downloadAsync(imageUrl, filename);
+
+            console.log(`[OpenAIService] Image saved to: ${downloadResult.uri}`);
+            return downloadResult.uri;
+        } catch (error: any) {
+            console.error('[OpenAIService] Image Generation Error:', error.response?.data || error.message);
+            throw new Error('Failed to generate image with OpenAI');
         }
     }
 

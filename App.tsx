@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, StatusBar, Text } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { StyleSheet, View, StatusBar, Text, Animated, Easing } from 'react-native';
 import { Colors } from './src/constants/theme';
 import LibraryScreen from './src/screens/LibraryScreen';
 import PlayerScreen from './src/screens/PlayerScreen';
@@ -12,6 +12,25 @@ export default function App() {
     const [currentScreen, setCurrentScreen] = useState<'library' | 'player'>('library');
     const [isLoading, setIsLoading] = useState(true);
     const [loadingMessage, setLoadingMessage] = useState('Đang khởi động...');
+    const spinValue = useRef(new Animated.Value(0)).current;
+
+    useEffect(() => {
+        if (isLoading) {
+            Animated.loop(
+                Animated.timing(spinValue, {
+                    toValue: 1,
+                    duration: 1000,
+                    easing: Easing.linear,
+                    useNativeDriver: true,
+                })
+            ).start();
+        }
+    }, [isLoading]);
+
+    const spin = spinValue.interpolate({
+        inputRange: [0, 1],
+        outputRange: ['0deg', '360deg'],
+    });
 
     // Cloud Sync on Startup only (Removing Background Listener as requested)
     useEffect(() => {
@@ -51,8 +70,7 @@ export default function App() {
             <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
                 <StatusBar barStyle="light-content" />
                 <View style={{ alignItems: 'center' }}>
-                    <View style={styles.loader} />
-                    <Text style={styles.loadingText}>{loadingMessage}</Text>
+                    <Animated.View style={[styles.loader, { transform: [{ rotate: spin }] }]} />
                 </View>
             </View>
         );
@@ -85,9 +103,18 @@ const styles = StyleSheet.create({
         marginBottom: 20,
     },
     loadingText: {
-        color: Colors.textSecondary,
-        fontSize: 14,
-        fontWeight: '500',
+        color: Colors.text,
+        fontSize: 16,
+        fontWeight: '600',
         letterSpacing: 0.5,
+        marginBottom: 8,
+    },
+    brandText: {
+        color: Colors.primary,
+        fontSize: 12,
+        fontWeight: 'bold',
+        textTransform: 'uppercase',
+        letterSpacing: 2,
+        opacity: 0.6,
     }
 });

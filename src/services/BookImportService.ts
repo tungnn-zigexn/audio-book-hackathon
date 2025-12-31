@@ -2,6 +2,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { databaseService } from './DatabaseService';
 import { epubParser } from './EpubParser';
 import { Asset } from 'expo-asset';
+import { coverImageService } from './CoverImageService';
 
 const PREBUILT_DB_ASSET = require('../../assets/audiobook-prebuilt.db');
 
@@ -110,6 +111,9 @@ class BookImportService {
                         last_chapter_index: 0
                     });
 
+                    // Trigger cover generation in background
+                    coverImageService.generateForBook(bookId, epubData.title, epubData.author || 'Chưa rõ');
+
                     for (let i = 0; i < epubData.chapters.length; i++) {
                         await databaseService.insertChapter({
                             book_id: bookId,
@@ -139,6 +143,9 @@ class BookImportService {
                 description: `Sách tải lên: ${epubData.title}`,
                 last_chapter_index: 0
             });
+
+            // Trigger cover generation in background
+            coverImageService.generateForBook(bookId, epubData.title, epubData.author || 'Chưa rõ tác giả');
 
             for (let i = 0; i < epubData.chapters.length; i++) {
                 await databaseService.insertChapter({
