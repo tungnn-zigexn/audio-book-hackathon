@@ -151,8 +151,8 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
     // Helper function to format chapter title with correct chapter number
     const getChapterDisplayTitle = (chapter: Chapter, index: number): string => {
         const chapterNumber = index + 1;
-        // Remove any existing "Chương X" prefix from title and use our own numbering
-        const cleanTitle = chapter.title.replace(/^Chương\s+\d+[\s\-:]*/i, '').trim();
+        // Remove any existing "Chương X" or "Chapter X" prefix from title and use our own numbering
+        const cleanTitle = chapter.title.replace(/^(Chương|Chapter)\s+\d+[\s\-:]*/i, '').trim();
         return `Chương ${chapterNumber}${cleanTitle ? ' - ' + cleanTitle : ''}`;
     };
 
@@ -347,7 +347,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
             const currentSelectedAIVoice = selectedAIVoice;
             const currentLanguage = language;
             const currentSpeechRate = speechRate;
-            
+
             // Use longer timeout to ensure all state updates are complete
             setTimeout(async () => {
                 console.log(`[PlayerScreen] Starting playback of next chapter ${chapterIdx + 1}`);
@@ -370,15 +370,15 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                     );
                 } else {
                     await audioService.speak(
-                        chapterContent, 
-                        currentLanguage, 
+                        chapterContent,
+                        currentLanguage,
                         (idx, tot, cks) => {
                             setChunks(cks);
                             setActiveChunkIndex(idx);
                             if (scrollViewRef.current) {
                                 scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
                             }
-                        }, 
+                        },
                         rIdx,
                         currentSpeechRate
                     );
@@ -442,7 +442,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
             const currentSelectedAIVoice = selectedAIVoice;
             const currentLanguage = language;
             const currentSpeechRate = speechRate;
-            
+
             // Use longer timeout to ensure all state updates are complete
             setTimeout(async () => {
                 console.log(`[PlayerScreen] Starting playback of previous chapter ${chapterIdx + 1}`);
@@ -465,15 +465,15 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                     );
                 } else {
                     await audioService.speak(
-                        chapterContent, 
-                        currentLanguage, 
+                        chapterContent,
+                        currentLanguage,
                         (idx, tot, cks) => {
                             setChunks(cks);
                             setActiveChunkIndex(idx);
                             if (scrollViewRef.current) {
                                 scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
                             }
-                        }, 
+                        },
                         rIdx,
                         currentSpeechRate
                     );
@@ -534,13 +534,13 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
 
             case 'speed':
                 if (command.action === 'increase') {
-                    audioService.increaseRate(command.value as number);
+                    await audioService.increaseRate(command.value as number);
                     setSpeechRate(audioService.getRate());
                 } else if (command.action === 'decrease') {
-                    audioService.decreaseRate(Math.abs(command.value as number));
+                    await audioService.decreaseRate(Math.abs(command.value as number));
                     setSpeechRate(audioService.getRate());
                 } else if (command.action === 'set') {
-                    audioService.setRate(command.value as number);
+                    await audioService.setRate(command.value as number);
                     setSpeechRate(audioService.getRate());
                 }
                 // Restart với tốc độ mới nếu đang phát (chỉ cho system TTS, không phải AI)
@@ -586,7 +586,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                 } else if (command.action === 'goto') {
                     const chapterIndex = command.value as number;
                     console.log(`[PlayerScreen] Goto command: target chapter index ${chapterIndex} (chương ${chapterIndex + 1}), current index: ${currentChapterIndex} (chương ${currentChapterIndex + 1})`);
-                    
+
                     // Validate: Check if chapter index is valid
                     if (chapterIndex < 0 || chapterIndex >= chapters.length) {
                         console.error(`[PlayerScreen] Invalid chapter index: ${chapterIndex} (valid range: 0-${chapters.length - 1})`);
@@ -672,15 +672,15 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                                 );
                             } else {
                                 await audioService.speak(
-                                    chapterContent, 
-                                    language, 
+                                    chapterContent,
+                                    language,
                                     (idx, tot, cks) => {
                                         setChunks(cks);
                                         setActiveChunkIndex(idx);
                                         if (scrollViewRef.current) {
                                             scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
                                         }
-                                    }, 
+                                    },
                                     rIdx,
                                     speechRate
                                 );
@@ -695,12 +695,10 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
         }
     };
 
-    // Manual speed controls (chỉ cho system TTS)
-    const handleSpeedIncrease = () => {
-        if (useAIVoice) return; // AI voice không hỗ trợ speed control
-        audioService.increaseRate(0.25);
+    const handleSpeedIncrease = async () => {
+        await audioService.increaseRate(0.25);
         setSpeechRate(audioService.getRate());
-        if (isPlaying) {
+        if (isPlaying && !useAIVoice) {
             audioService.restartWithNewRate((index, total, currentChunks) => {
                 setChunks(currentChunks);
                 setActiveChunkIndex(index);
@@ -708,11 +706,10 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
         }
     };
 
-    const handleSpeedDecrease = () => {
-        if (useAIVoice) return; // AI voice không hỗ trợ speed control
-        audioService.decreaseRate(0.25);
+    const handleSpeedDecrease = async () => {
+        await audioService.decreaseRate(0.25);
         setSpeechRate(audioService.getRate());
-        if (isPlaying) {
+        if (isPlaying && !useAIVoice) {
             audioService.restartWithNewRate((index, total, currentChunks) => {
                 setChunks(currentChunks);
                 setActiveChunkIndex(index);

@@ -124,13 +124,20 @@ class AudioService {
         }
     }
 
-    /**
-     * Thay đổi tốc độ đọc
-     */
-    setRate(rate: number) {
+    async setRate(rate: number) {
         // Clamp rate between 0.25 and 2.0
         this.currentRate = Math.max(0.25, Math.min(2.0, rate));
         console.log(`[AudioService] Rate set to: ${this.currentRate}`);
+
+        // Apply to current AI sound if playing
+        if (this.sound) {
+            try {
+                await this.sound.setRateAsync(this.currentRate, true);
+                console.log('[AudioService] Applied new rate to active AI sound');
+            } catch (e) {
+                console.warn('[AudioService] Could not set rate on active sound:', e);
+            }
+        }
     }
 
     /**
@@ -312,6 +319,8 @@ class AudioService {
                             shouldPlay: true,
                             volume: 1.0,
                             positionMillis: resumeMillis,
+                            rate: this.currentRate,
+                            shouldCorrectPitch: true,
                             progressUpdateIntervalMillis: 100 // Update position every 100ms
                         }
                     );
