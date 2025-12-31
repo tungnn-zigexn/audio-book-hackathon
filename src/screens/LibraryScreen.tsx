@@ -76,6 +76,24 @@ export default function LibraryScreen({ onSelectBook }: { onSelectBook: () => vo
         );
     };
 
+    const handleDeleteBook = (book: Book) => {
+        Alert.alert(
+            "Xóa sách",
+            `Bạn có chắc chắn muốn xóa cuốn sách "${book.title}" khỏi thư viện?`,
+            [
+                { text: "Hủy", style: "cancel" },
+                {
+                    text: "Xóa",
+                    style: "destructive",
+                    onPress: async () => {
+                        await databaseService.deleteBook(book.id);
+                        await loadBooks();
+                    }
+                }
+            ]
+        );
+    };
+
     const filteredBooks = dbBooks.filter(book =>
         (book.title?.toLowerCase() || '').includes(searchQuery.toLowerCase()) ||
         (book.author?.toLowerCase() || '').includes(searchQuery.toLowerCase())
@@ -131,9 +149,15 @@ export default function LibraryScreen({ onSelectBook }: { onSelectBook: () => vo
                             </View>
                         )}
                         <View style={styles.bookInfo}>
-                            <Text style={styles.bookTitle}>{item.title}</Text>
+                            <Text style={styles.bookTitle} numberOfLines={1}>{item.title}</Text>
                             <Text style={styles.bookAuthor}>{item.author}</Text>
                         </View>
+                        <TouchableOpacity
+                            style={styles.deleteButton}
+                            onPress={() => handleDeleteBook(item)}
+                        >
+                            <Trash2 color={Colors.textSecondary} size={20} />
+                        </TouchableOpacity>
                     </TouchableOpacity>
                 )}
             />
@@ -206,6 +230,7 @@ const styles = StyleSheet.create({
     bookInfo: {
         marginLeft: Spacing.md,
         justifyContent: 'center',
+        flex: 1, // Allow info to take remaining space
     },
     bookTitle: {
         fontSize: 18,
@@ -216,5 +241,10 @@ const styles = StyleSheet.create({
     bookAuthor: {
         fontSize: 14,
         color: Colors.textSecondary,
+    },
+    deleteButton: {
+        justifyContent: 'center',
+        paddingLeft: Spacing.md,
+        paddingRight: Spacing.xs,
     },
 });
