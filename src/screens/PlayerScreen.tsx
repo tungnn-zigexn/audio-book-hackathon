@@ -802,10 +802,6 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                     >
                         <Zap color={useAIVoice ? Colors.background : Colors.primary} size={20} />
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={toggleLanguage} style={styles.langButton}>
-                        <Languages color={Colors.primary} size={20} />
-                        <Text style={styles.langText}>{language.toUpperCase()}</Text>
-                    </TouchableOpacity>
                 </View>
             </View>
 
