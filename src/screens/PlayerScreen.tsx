@@ -43,6 +43,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
     const [isPlaying, setIsPlaying] = useState(false);
     const [language, setLanguage] = useState<'en' | 'vi'>('vi');
     const [speechRate, setSpeechRate] = useState(1.0);
+    const [volume, setVolume] = useState(100); // Volume từ 0-100
 
     // AI Voice states
     const [useAIVoice, setUseAIVoice] = useState(false);
@@ -575,6 +576,67 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                     Alert.alert('Lỗi', error.message || 'Không thể tạo tóm tắt');
                 } finally {
                     setIsGeneratingSummary(false);
+                }
+                break;
+
+            case 'volume':
+                if (command.action === 'increase') {
+                    const newVolume = Math.min(100, volume + (command.value as number || 10));
+                    setVolume(newVolume);
+                    audioService.setVolume(newVolume / 100);
+                } else if (command.action === 'decrease') {
+                    const newVolume = Math.max(0, volume + (command.value as number || -10));
+                    setVolume(newVolume);
+                    audioService.setVolume(newVolume / 100);
+                } else if (command.action === 'set') {
+                    const newVolume = Math.max(0, Math.min(100, command.value as number || 75));
+                    setVolume(newVolume);
+                    audioService.setVolume(newVolume / 100);
+                }
+                break;
+
+            case 'voice':
+                if (command.action === 'change') {
+                    // Random chọn một giọng khác với giọng hiện tại
+                    const availableVoices: OpenAIVoice[] = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
+                    const otherVoices = availableVoices.filter(v => v !== selectedAIVoice);
+                    if (otherVoices.length > 0) {
+                        const randomIndex = Math.floor(Math.random() * otherVoices.length);
+                        const newVoice = otherVoices[randomIndex];
+                        
+                        console.log(`[PlayerScreen] Changing voice from ${selectedAIVoice} to ${newVoice}`);
+                        
+                        if (!useAIVoice) {
+                            // Switch to AI voice if not already using it
+                            setUseAIVoice(true);
+                        }
+                        setSelectedAIVoice(newVoice);
+                        
+                        // If currently playing, restart with new voice
+                        if (isPlaying && currentChapter) {
+                            const wasPlaying = isPlaying;
+                            await audioService.stop();
+                            if (wasPlaying) {
+                                setTimeout(async () => {
+                                    await audioService.speakWithOpenAI(
+                                        currentChapter.content,
+                                        newVoice,
+                                        (idx, tot, cks) => {
+                                            setChunks(cks);
+                                            setActiveChunkIndex(idx);
+                                            if (scrollViewRef.current) {
+                                                scrollViewRef.current.scrollTo({ y: idx * 40, animated: true });
+                                            }
+                                        },
+                                        (msg) => setAIProgress(msg),
+                                        activeChunkIndex >= 0 ? activeChunkIndex : 0,
+                                        0
+                                    );
+                                    setIsPlaying(true);
+                                }, 200);
+                            }
+                        }
+                    }
                 }
                 break;
 
