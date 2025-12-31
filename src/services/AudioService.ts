@@ -19,6 +19,7 @@ class AudioService {
 
     // Speed control features
     private currentRate: number = 1.0; // Tốc độ hiện tại (0.25 - 2.0)
+    private currentVolume: number = 1.0; // Âm lượng hiện tại (0.0 - 1.0)
     private isPlaying: boolean = false;
     private currentLanguage: 'en' | 'vi' = 'vi';
     private currentText: string = '';
@@ -90,7 +91,7 @@ class AudioService {
                         language: langCode,
                         pitch: 1.0,
                         rate: speechRate,
-                        volume: 1.0, // Đảm bảo volume tối đa
+                        volume: this.currentVolume, // Sử dụng volume hiện tại
                         onStart: () => {
                             console.log(`[AudioService] Speaking chunk ${currentChunkIndex + 1}/${chunks.length} with language ${langCode}`);
                         },
@@ -156,6 +157,27 @@ class AudioService {
 
     getRate(): number {
         return this.currentRate;
+    }
+
+    /**
+     * Set volume (0.0 - 1.0)
+     */
+    setVolume(volume: number) {
+        this.currentVolume = Math.max(0.0, Math.min(1.0, volume));
+        console.log(`[AudioService] Volume set to: ${this.currentVolume}`);
+        // Update volume of currently playing sound if exists
+        if (this.sound && this.isPlayingAI) {
+            this.sound.setVolumeAsync(this.currentVolume).catch(err => {
+                console.warn('[AudioService] Failed to update volume:', err);
+            });
+        }
+    }
+
+    /**
+     * Get current volume (0.0 - 1.0)
+     */
+    getVolume(): number {
+        return this.currentVolume;
     }
 
     getIsPlaying(): boolean {
@@ -317,7 +339,7 @@ class AudioService {
                         { uri: audioUri },
                         {
                             shouldPlay: true,
-                            volume: 1.0,
+                            volume: this.currentVolume,
                             positionMillis: resumeMillis,
                             rate: this.currentRate,
                             shouldCorrectPitch: true,

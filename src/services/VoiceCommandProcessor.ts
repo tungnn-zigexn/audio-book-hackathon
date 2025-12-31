@@ -2,7 +2,7 @@ import { openAIService } from './OpenAIService';
 import { voiceService } from './VoiceService';
 
 export interface VoiceCommand {
-    intent: 'play' | 'pause' | 'speed' | 'summarize' | 'navigation' | 'unknown';
+    intent: 'play' | 'pause' | 'speed' | 'summarize' | 'navigation' | 'volume' | 'voice' | 'unknown';
     action: string;
     value?: number | string;
     confidence: number;
@@ -130,12 +130,20 @@ Các loại lệnh có thể:
    - previous: Chương trước (ví dụ: "chương trước", "quay lại", "lùi lại", "chương trước đó")
    - goto: Đến chương cụ thể (ví dụ: "chương 5", "đến chương 3", "nhảy đến chương 10", "về lại chương 5")
        LƯU Ý: Với goto, value phải là số chương thực tế mà người dùng nói (1-indexed). Ví dụ: "chương 5" thì value là 5, "chương 3" thì value là 3.
+6. volume - Điều chỉnh âm lượng:
+   - increase: Tăng âm lượng (ví dụ: "to hơn", "tăng âm lượng", "lớn tiếng hơn", "to lên", "âm lượng to hơn", "to", "lớn tiếng", "tăng âm", "âm lượng lớn hơn", "to ra")
+   - decrease: Giảm âm lượng (ví dụ: "nhỏ hơn", "giảm âm lượng", "nhỏ tiếng hơn", "nhỏ lại", "âm lượng nhỏ hơn", "nhỏ", "nhỏ tiếng", "giảm âm", "âm lượng nhỏ hơn", "nhỏ xuống")
+   - set: Đặt âm lượng cụ thể (ví dụ: "âm lượng 50", "âm lượng 80 phần trăm", "âm lượng tối đa", "âm lượng bình thường", "âm lượng 100", "âm lượng 0")
+       LƯU Ý: Với set, value phải là số từ 0-100 (phần trăm). Ví dụ: "âm lượng 50" thì value là 50, "âm lượng 80 phần trăm" thì value là 80, "âm lượng tối đa" thì value là 100.
+7. voice - Đổi giọng AI:
+   - change: Đổi sang giọng AI khác (ví dụ: "đổi sang giọng đọc khác", "đổi giọng", "giọng khác", "chuyển giọng", "đổi giọng đọc", "giọng đọc khác", "thay đổi giọng", "đổi sang giọng khác", "chuyển sang giọng khác")
+       LƯU Ý: Với voice change, không cần value. Hệ thống sẽ tự động chọn một giọng AI khác với giọng hiện tại.
 
 Trả về JSON với format:
 {
-  "intent": "play|pause|speed|summarize|navigation|unknown",
-  "action": "start|stop|increase|decrease|set|chapter|book|next|previous|goto",
-  "value": số hoặc chuỗi (nếu có, ví dụ: tốc độ 1.5 thì value là 1.5, chương 5 thì value là 5 (số chương thực tế, không phải 0-indexed)),
+  "intent": "play|pause|speed|summarize|navigation|volume|voice|unknown",
+  "action": "start|stop|increase|decrease|set|chapter|book|next|previous|goto|change",
+  "value": số hoặc chuỗi (nếu có, ví dụ: tốc độ 1.5 thì value là 1.5, chương 5 thì value là 5 (số chương thực tế, không phải 0-indexed), âm lượng 50 thì value là 50),
   "confidence": 0.0-1.0
 }
 
@@ -168,11 +176,11 @@ Chỉ trả về JSON, không có text khác.`;
                     originalText: text
                 };
 
-                // Validate intent
-                const validIntents = ['play', 'pause', 'speed', 'summarize', 'navigation', 'unknown'];
-                if (!validIntents.includes(command.intent)) {
-                    command.intent = 'unknown';
-                }
+                    // Validate intent
+                    const validIntents = ['play', 'pause', 'speed', 'summarize', 'navigation', 'volume', 'voice', 'unknown'];
+                    if (!validIntents.includes(command.intent)) {
+                        command.intent = 'unknown';
+                    }
 
                 // Handle navigation goto - convert to 0-indexed
                 if (command.intent === 'navigation' && command.action === 'goto' && typeof command.value === 'number') {
@@ -182,6 +190,11 @@ Chỉ trả về JSON, không có text khác.`;
                 // Handle speed value validation
                 if (command.intent === 'speed' && command.action === 'set' && typeof command.value === 'number') {
                     command.value = Math.max(0.25, Math.min(2.0, command.value));
+                }
+
+                // Handle volume value validation
+                if (command.intent === 'volume' && command.action === 'set' && typeof command.value === 'number') {
+                    command.value = Math.max(0, Math.min(100, command.value));
                 }
 
                 console.log('[VoiceCommand] Parsed command:', command);
@@ -336,6 +349,65 @@ Chỉ trả về JSON, không có text khác.`;
                     originalText: text
                 };
             }
+        }
+
+        // Check volume increase - mở rộng patterns
+        if (/to hơn|tăng âm lượng|lớn tiếng hơn|to lên|âm lượng to hơn|tăng âm|to$|lớn tiếng|âm lượng lớn hơn|to ra|tăng âm lượng lên/i.test(lowerText)) {
+            return {
+                intent: 'volume',
+                action: 'increase',
+                value: 10, // Increase by 10%
+                confidence: 0.85,
+                originalText: text
+            };
+        }
+
+        // Check volume decrease - mở rộng patterns
+        if (/nhỏ hơn|giảm âm lượng|nhỏ tiếng hơn|nhỏ lại|âm lượng nhỏ hơn|giảm âm|nhỏ$|nhỏ tiếng|âm lượng nhỏ hơn|nhỏ xuống|giảm âm lượng xuống/i.test(lowerText)) {
+            return {
+                intent: 'volume',
+                action: 'decrease',
+                value: -10, // Decrease by 10%
+                confidence: 0.85,
+                originalText: text
+            };
+        }
+
+        // Check volume set
+        const volumeMatch = lowerText.match(/âm lượng (\d+)|volume (\d+)|âm lượng (\d+) phần trăm/i);
+        if (volumeMatch) {
+            const volume = parseInt(volumeMatch[1] || volumeMatch[2] || volumeMatch[3]);
+            if (!isNaN(volume) && volume >= 0 && volume <= 100) {
+                return {
+                    intent: 'volume',
+                    action: 'set',
+                    value: volume,
+                    confidence: 0.9,
+                    originalText: text
+                };
+            }
+        }
+
+        // Check normal volume
+        if (/âm lượng bình thường|âm lượng tối đa|volume max|volume normal/i.test(lowerText)) {
+            const volume = /tối đa|max/i.test(lowerText) ? 100 : 75;
+            return {
+                intent: 'volume',
+                action: 'set',
+                value: volume,
+                confidence: 0.9,
+                originalText: text
+            };
+        }
+
+        // Check voice change - đơn giản hóa, chỉ cần nói "đổi giọng" hoặc "giọng khác"
+        if (/đổi sang giọng đọc khác|đổi giọng|giọng khác|chuyển giọng|đổi giọng đọc|giọng đọc khác|thay đổi giọng|đổi sang giọng khác|chuyển sang giọng khác/i.test(lowerText)) {
+            return {
+                intent: 'voice',
+                action: 'change',
+                confidence: 0.95,
+                originalText: text
+            };
         }
 
         return {
