@@ -2,7 +2,7 @@
   "expo": {
     "name": "audiobook-app",
     "slug": "audiobook-app",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -16,6 +16,7 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.tungnn.audiobook",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -27,6 +28,11 @@
     },
     "plugins": [
       "expo-sqlite"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "e1fa9861-8d00-41c6-a16f-191bb0b9142e"
+      }
+    }
   }
 }
