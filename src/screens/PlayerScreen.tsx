@@ -148,10 +148,19 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
         );
     }
 
+    // Helper function to format chapter title with correct chapter number
+    const getChapterDisplayTitle = (chapter: Chapter, index: number): string => {
+        const chapterNumber = index + 1;
+        // Remove any existing "Chương X" prefix from title and use our own numbering
+        const cleanTitle = chapter.title.replace(/^Chương\s+\d+[\s\-:]*/i, '').trim();
+        return `Chương ${chapterNumber}${cleanTitle ? ' - ' + cleanTitle : ''}`;
+    };
+
     // Log để debug
     if (__DEV__) {
         console.log('[PlayerScreen] Current chapter index:', currentChapterIndex);
-        console.log('[PlayerScreen] Current chapter title:', currentChapter.title);
+        console.log('[PlayerScreen] Current chapter title (original):', currentChapter.title);
+        console.log('[PlayerScreen] Current chapter title (display):', getChapterDisplayTitle(currentChapter, currentChapterIndex));
         console.log('[PlayerScreen] Current chapter content length:', currentChapter.content?.length || 0);
     }
 
@@ -797,7 +806,7 @@ export default function PlayerScreen({ onBack }: { onBack: () => void }) {
                     <View style={styles.infoContainer}>
                         <Text style={styles.title} numberOfLines={2}>{selectedBook.title}</Text>
                         <Text style={styles.author} numberOfLines={1}>{selectedBook.author}</Text>
-                        <Text style={styles.chapterTitle} numberOfLines={1}>{currentChapter.title}</Text>
+                        <Text style={styles.chapterTitle} numberOfLines={1}>{getChapterDisplayTitle(currentChapter, currentChapterIndex)}</Text>
 
                         {/* Speed Control - Compact */}
                         <View style={styles.speedControl}>
