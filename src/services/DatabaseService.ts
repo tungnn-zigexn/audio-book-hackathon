@@ -123,9 +123,10 @@ class DatabaseService {
 
     async getChapters(bookId: number): Promise<Chapter[]> {
         await this.init();
+        if (bookId === undefined || bookId === null) return [];
         return await this.db!.getAllAsync<Chapter>(
             'SELECT * FROM chapters WHERE book_id = ? ORDER BY order_index ASC',
-            bookId
+            [bookId]
         );
     }
 
@@ -137,12 +138,12 @@ class DatabaseService {
             String(book.cover_uri ?? ''),
             String(book.language ?? 'vi'),
             String(book.description ?? ''),
-            book.last_chapter_index ?? 0
+            Number(book.last_chapter_index ?? 0)
         ];
 
         const result = await this.db!.runAsync(
             'INSERT INTO books (title, author, cover_uri, language, description, last_chapter_index) VALUES (?, ?, ?, ?, ?, ?)',
-            ...params
+            params
         );
         return result.lastInsertRowId;
     }
@@ -151,10 +152,12 @@ class DatabaseService {
         await this.init();
         await this.db!.runAsync(
             'INSERT INTO chapters (book_id, title, content, order_index) VALUES (?, ?, ?, ?)',
-            chapter.book_id,
-            String(chapter.title ?? 'Untitled Chapter'),
-            String(chapter.content ?? ''),
-            chapter.order_index ?? 0
+            [
+                Number(chapter.book_id),
+                String(chapter.title ?? 'Untitled Chapter'),
+                String(chapter.content ?? ''),
+                Number(chapter.order_index ?? 0)
+            ]
         );
     }
 
@@ -162,8 +165,7 @@ class DatabaseService {
         await this.init();
         await this.db!.runAsync(
             'UPDATE books SET last_chapter_index = ? WHERE id = ?',
-            chapterIndex,
-            bookId
+            [Number(chapterIndex), Number(bookId)]
         );
     }
 
@@ -171,8 +173,7 @@ class DatabaseService {
         await this.init();
         await this.db!.runAsync(
             'UPDATE books SET cover_uri = ? WHERE id = ?',
-            coverUri,
-            bookId
+            [String(coverUri), Number(bookId)]
         );
     }
 
@@ -181,9 +182,11 @@ class DatabaseService {
      */
     async getCachedAudio(chapterId: number, chunkIndex: number, voice: string): Promise<string | null> {
         await this.init();
+        if (!chapterId || chunkIndex === undefined || !voice) return null;
+
         const row = await this.db!.getFirstAsync<{data: Uint8Array}>(
             'SELECT data FROM audio_cache WHERE chapter_id = ? AND chunk_index = ? AND voice = ?',
-            chapterId, chunkIndex, voice
+            [Number(chapterId), Number(chunkIndex), String(voice)]
         );
 
         if (row && row.data) {
@@ -224,7 +227,7 @@ class DatabaseService {
             // 1. Check current voice count for this chunk
             const countRow = await this.db!.getFirstAsync<{c: number}>(
                 'SELECT COUNT(DISTINCT voice) as c FROM audio_cache WHERE chapter_id = ? AND chunk_index = ?',
-                chapterId, chunkIndex
+                [Number(chapterId), Number(chunkIndex)]
             );
 
             const voiceCount = countRow?.c || 0;
@@ -232,7 +235,7 @@ class DatabaseService {
             // 2. If already have 2 different voices AND this is a NEW voice, don't persist
             const existingVoice = await this.db!.getFirstAsync<{id: number}>(
                 'SELECT id FROM audio_cache WHERE chapter_id = ? AND chunk_index = ? AND voice = ?',
-                chapterId, chunkIndex, voice
+                [Number(chapterId), Number(chunkIndex), String(voice)]
             );
 
             if (voiceCount >= 2 && !existingVoice) {
@@ -248,12 +251,12 @@ class DatabaseService {
             if (existingVoice) {
                 await this.db!.runAsync(
                     'UPDATE audio_cache SET data = ? WHERE chapter_id = ? AND chunk_index = ? AND voice = ?',
-                    binaryData, chapterId, chunkIndex, voice
+                    [binaryData, Number(chapterId), Number(chunkIndex), String(voice)]
                 );
             } else {
                 await this.db!.runAsync(
                     'INSERT INTO audio_cache (chapter_id, chunk_index, voice, data) VALUES (?, ?, ?, ?)',
-                    chapterId, chunkIndex, voice, binaryData
+                    [Number(chapterId), Number(chunkIndex), String(voice), binaryData]
                 );
             }
 
@@ -301,12 +304,12 @@ class DatabaseService {
             // 1. Delete all audio cache for this book
             await this.db!.runAsync(
                 'DELETE FROM audio_cache WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)',
-                bookId
+                [Number(bookId)]
             );
             // 2. Delete all chapters
-            await this.db!.runAsync('DELETE FROM chapters WHERE book_id = ?', bookId);
+            await this.db!.runAsync('DELETE FROM chapters WHERE book_id = ?', [Number(bookId)]);
             // 3. Delete the book record
-            await this.db!.runAsync('DELETE FROM books WHERE id = ?', bookId);
+            await this.db!.runAsync('DELETE FROM books WHERE id = ?', [Number(bookId)]);
         });
         console.log(`[DatabaseService] Book ${bookId} deleted.`);
     }

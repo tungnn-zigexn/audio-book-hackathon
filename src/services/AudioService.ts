@@ -355,10 +355,17 @@ class AudioService {
                         console.log(`[AudioService] Memory cache HIT for ${key}`);
                     }
 
-                    if (!this.isPlayingAI) return;
-
                     // Start prefetching the next one immediately
                     prefetchNext(currentIdx + 1);
+
+                    if (!this.isPlayingAI) return;
+
+                    if (!audioUri) {
+                        console.error(`[AudioService] Aborting playback: No audio URI available for ${key}`);
+                        this.isPlayingAI = false; // Stop AI playback on error
+                        if (onProgress) onProgress('Lỗi: Không thể tải âm thanh.');
+                        return;
+                    }
 
                     console.log(`[AudioService] Creating sound for: ${audioUri}${resumeMillis > 0 ? ` at ${resumeMillis}ms` : ''}`);
                     const { sound } = await Audio.Sound.createAsync(
