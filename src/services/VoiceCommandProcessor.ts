@@ -87,8 +87,15 @@ class VoiceCommandProcessor {
                 return null;
             }
 
-            // 5. Phân tích và trích xuất command
-            const command = this.parseCommand(transcript);
+            // 5. Phân tích và trích xuất command bằng AI (tự nhiên hơn)
+            let command = await this.parseCommandWithAI(transcript);
+            
+            // Fallback về regex nếu AI không parse được
+            if (!command || command.intent === 'unknown') {
+                console.log('[VoiceCommand] AI parsing failed or returned unknown, falling back to regex');
+                command = this.parseCommand(transcript);
+            }
+            
             command.originalText = transcript;
             return command;
 
@@ -101,14 +108,103 @@ class VoiceCommandProcessor {
     }
 
     /**
-     * Phân tích text và trích xuất command
+     * Phân tích text và trích xuất command bằng AI (GPT)
+     */
+    async parseCommandWithAI(text: string): Promise<VoiceCommand | null> {
+        try {
+            const systemPrompt = `Bạn là một AI assistant chuyên phân tích lệnh giọng nói cho ứng dụng audiobook.
+Nhiệm vụ của bạn là phân tích câu nói của người dùng và trả về lệnh dưới dạng JSON.
+
+Các loại lệnh có thể:
+1. play - Bắt đầu phát/đọc sách (ví dụ: "bắt đầu", "phát đi", "đọc cho tôi nghe", "mở sách lên")
+2. pause - Dừng phát (ví dụ: "dừng lại", "tạm dừng", "ngừng đọc", "dừng đi")
+3. speed - Điều chỉnh tốc độ:
+   - increase: Tăng tốc (ví dụ: "nói nhanh hơn", "tăng tốc độ", "đọc nhanh lên", "tăng lên")
+   - decrease: Giảm tốc (ví dụ: "nói chậm lại", "giảm tốc", "đọc chậm hơn", "chậm lại")
+   - set: Đặt tốc độ cụ thể (ví dụ: "tốc độ 1.5", "đọc với tốc độ 2", "tốc độ bình thường")
+4. summarize - Tóm tắt:
+   - chapter: Tóm tắt chương hiện tại (ví dụ: "tóm tắt chương này", "tóm tắt chương", "tóm tắt phần này")
+   - book: Tóm tắt toàn bộ sách (ví dụ: "tóm tắt sách", "tóm tắt cuốn sách", "tóm tắt toàn bộ")
+5. navigation - Điều hướng:
+   - next: Chương tiếp theo (ví dụ: "chương sau", "tiếp theo", "sang chương tiếp", "chuyển sang chương sau")
+   - previous: Chương trước (ví dụ: "chương trước", "quay lại", "lùi lại", "chương trước đó")
+   - goto: Đến chương cụ thể (ví dụ: "chương 5", "đến chương 3", "nhảy đến chương 10", "về lại chương 5")
+       LƯU Ý: Với goto, value phải là số chương thực tế mà người dùng nói (1-indexed). Ví dụ: "chương 5" thì value là 5, "chương 3" thì value là 3.
+
+Trả về JSON với format:
+{
+  "intent": "play|pause|speed|summarize|navigation|unknown",
+  "action": "start|stop|increase|decrease|set|chapter|book|next|previous|goto",
+  "value": số hoặc chuỗi (nếu có, ví dụ: tốc độ 1.5 thì value là 1.5, chương 5 thì value là 5 (số chương thực tế, không phải 0-indexed)),
+  "confidence": 0.0-1.0
+}
+
+Chỉ trả về JSON, không có text khác.`;
+
+            const userPrompt = `Phân tích lệnh sau và trả về JSON: "${text}"`;
+
+            const response = await openAIService.chatCompletion([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ], {
+                model: 'gpt-3.5-turbo',
+                max_tokens: 200,
+                temperature: 0.3 // Lower temperature for more consistent results
+            });
+
+            console.log('[VoiceCommand] AI Response:', response);
+
+            // Parse JSON response
+            const jsonMatch = response.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                const parsed = JSON.parse(jsonMatch[0]);
+                
+                // Validate and normalize
+                const command: VoiceCommand = {
+                    intent: parsed.intent || 'unknown',
+                    action: parsed.action || 'unknown',
+                    value: parsed.value,
+                    confidence: parsed.confidence || 0.8,
+                    originalText: text
+                };
+
+                // Validate intent
+                const validIntents = ['play', 'pause', 'speed', 'summarize', 'navigation', 'unknown'];
+                if (!validIntents.includes(command.intent)) {
+                    command.intent = 'unknown';
+                }
+
+                // Handle navigation goto - convert to 0-indexed
+                if (command.intent === 'navigation' && command.action === 'goto' && typeof command.value === 'number') {
+                    command.value = Math.max(0, command.value - 1);
+                }
+
+                // Handle speed value validation
+                if (command.intent === 'speed' && command.action === 'set' && typeof command.value === 'number') {
+                    command.value = Math.max(0.25, Math.min(2.0, command.value));
+                }
+
+                console.log('[VoiceCommand] Parsed command:', command);
+                return command;
+            }
+
+            return null;
+        } catch (error: any) {
+            console.error('[VoiceCommand] AI parsing error:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Phân tích text và trích xuất command (fallback với regex)
      */
     parseCommand(text: string): VoiceCommand {
         const lowerText = text.toLowerCase().trim();
 
-        // Check play
+        // Check play - mở rộng patterns
         if (this.patterns.play.vi.some(p => p.test(lowerText)) ||
-            this.patterns.play.en.some(p => p.test(lowerText))) {
+            this.patterns.play.en.some(p => p.test(lowerText)) ||
+            /bắt đầu|mở|phát đi|đọc cho|đọc đi|chơi đi|bật/i.test(lowerText)) {
             return {
                 intent: 'play',
                 action: 'start',
@@ -117,9 +213,10 @@ class VoiceCommandProcessor {
             };
         }
 
-        // Check pause
+        // Check pause - mở rộng patterns
         if (this.patterns.pause.vi.some(p => p.test(lowerText)) ||
-            this.patterns.pause.en.some(p => p.test(lowerText))) {
+            this.patterns.pause.en.some(p => p.test(lowerText)) ||
+            /dừng|ngừng|tắt|dừng lại|tạm dừng|dừng đi|ngừng đi/i.test(lowerText)) {
             return {
                 intent: 'pause',
                 action: 'stop',
@@ -128,9 +225,10 @@ class VoiceCommandProcessor {
             };
         }
 
-        // Check speed increase
+        // Check speed increase - mở rộng patterns
         if (this.patterns.speed.increase.vi.some(p => p.test(lowerText)) ||
-            this.patterns.speed.increase.en.some(p => p.test(lowerText))) {
+            this.patterns.speed.increase.en.some(p => p.test(lowerText)) ||
+            /nhanh hơn|tăng lên|nhanh lên|đọc nhanh|tăng tốc|nhanh|tăng/i.test(lowerText)) {
             return {
                 intent: 'speed',
                 action: 'increase',
@@ -140,9 +238,10 @@ class VoiceCommandProcessor {
             };
         }
 
-        // Check speed decrease
+        // Check speed decrease - mở rộng patterns
         if (this.patterns.speed.decrease.vi.some(p => p.test(lowerText)) ||
-            this.patterns.speed.decrease.en.some(p => p.test(lowerText))) {
+            this.patterns.speed.decrease.en.some(p => p.test(lowerText)) ||
+            /chậm lại|giảm xuống|chậm hơn|đọc chậm|giảm tốc|chậm|giảm/i.test(lowerText)) {
             return {
                 intent: 'speed',
                 action: 'decrease',
@@ -200,9 +299,10 @@ class VoiceCommandProcessor {
             };
         }
 
-        // Check navigation next
+        // Check navigation next - mở rộng patterns
         if (this.patterns.navigation.next.vi.some(p => p.test(lowerText)) ||
-            this.patterns.navigation.next.en.some(p => p.test(lowerText))) {
+            this.patterns.navigation.next.en.some(p => p.test(lowerText)) ||
+            /sang chương sau|chuyển sang|tiếp|sau|tiếp tục|chương tiếp|sang tiếp/i.test(lowerText)) {
             return {
                 intent: 'navigation',
                 action: 'next',
@@ -211,9 +311,10 @@ class VoiceCommandProcessor {
             };
         }
 
-        // Check navigation previous
+        // Check navigation previous - mở rộng patterns
         if (this.patterns.navigation.previous.vi.some(p => p.test(lowerText)) ||
-            this.patterns.navigation.previous.en.some(p => p.test(lowerText))) {
+            this.patterns.navigation.previous.en.some(p => p.test(lowerText)) ||
+            /quay lại|lùi lại|chương trước|trước|về trước|quay về/i.test(lowerText)) {
             return {
                 intent: 'navigation',
                 action: 'previous',
@@ -222,15 +323,15 @@ class VoiceCommandProcessor {
             };
         }
 
-        // Check navigation goto
-        const chapterMatch = lowerText.match(/chương (\d+)|chapter (\d+)/i);
+        // Check navigation goto - support various patterns including "về lại chương X", "đến chương X", etc.
+        const chapterMatch = lowerText.match(/(?:về lại|đến|nhảy đến|chuyển đến|chuyển tới|chuyển sang|sang|tới)\s*chương\s*(\d+)|chương\s*(\d+)|chapter\s*(\d+)/i);
         if (chapterMatch) {
-            const chapterNum = parseInt(chapterMatch[1] || chapterMatch[2]);
+            const chapterNum = parseInt(chapterMatch[1] || chapterMatch[2] || chapterMatch[3]);
             if (chapterNum > 0) {
                 return {
                     intent: 'navigation',
                     action: 'goto',
-                    value: chapterNum - 1, // 0-indexed
+                    value: chapterNum - 1, // Convert to 0-indexed (chương 5 -> index 4)
                     confidence: 0.9,
                     originalText: text
                 };
