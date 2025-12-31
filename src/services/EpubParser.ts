@@ -106,29 +106,26 @@ class EpubParser {
                     if (navList) {
                         if (!Array.isArray(navList)) navList = [navList];
                         for (const item of navList) {
-                            const rawTitle = item.a?.["#text"] || item.span?.["#text"] || item.a || "Chương không tên";
-                            const title = this.stripHtml(typeof rawTitle === 'string' ? rawTitle : JSON.stringify(rawTitle)).trim();
+                            try {
+                                const rawTitle = item.a?.["#text"] || item.span?.["#text"] || item.a || "Chương không tên";
+                                const title = this.stripHtml(typeof rawTitle === 'string' ? rawTitle : JSON.stringify(rawTitle)).trim();
 
-                            // Skip metadata chapters by title
-                            if (skipTitleKeywords.some(kw => title.toLowerCase().includes(kw))) {
-                                console.log(`[EpubParser] Skipping metadata chapter by title: ${title}`);
-                                continue;
-                            }
+                                if (skipTitleKeywords.some(kw => title.toLowerCase().includes(kw))) continue;
 
-                            let src = item.a?.["@_href"];
-                            if (src) {
-                                if (src.includes('#')) src = src.split('#')[0];
-                                const contentPath = opfDir + src;
-                                const html = await zip.file(contentPath)?.async('text');
-                                if (html) {
-                                    let text = this.stripHtml(html);
-                                    text = this.cleanChapterContent(title, text);
-                                    if (text.length > 20) {
-                                        console.log(`[EpubParser] Extracted Chapter: ${title} | Length: ${text.length}`);
-                                        epubChapters.push({ title, content: text.slice(0, 100000)});
+                                let src = item.a?.["@_href"];
+                                if (src) {
+                                    const [purePath, anchor] = src.includes('#') ? src.split('#') : [src, null];
+                                    const contentPath = opfDir + purePath;
+                                    const html = await zip.file(contentPath)?.async('text');
+                                    if (html) {
+                                        let text = anchor ? this.extractContentByAnchor(html, anchor) : this.stripHtml(html);
+                                        text = this.cleanChapterContent(title, text);
+                                        if (text.length > 20) {
+                                            epubChapters.push({ title, content: text.slice(0, 100000)});
+                                        }
                                     }
                                 }
-                            }
+                            } catch (e) {}
                         }
                     }
                 }
@@ -147,27 +144,23 @@ class EpubParser {
                         if (navPoints) {
                             if (!Array.isArray(navPoints)) navPoints = [navPoints];
                             for (const point of navPoints) {
-                                const title = String(point.navLabel?.text || 'Chương không tên').trim();
+                                try {
+                                    const title = String(point.navLabel?.text || 'Chương không tên').trim();
+                                    if (skipTitleKeywords.some(kw => title.toLowerCase().includes(kw))) continue;
 
-                                // Skip metadata chapters by title
-                                if (skipTitleKeywords.some(kw => title.toLowerCase().includes(kw))) {
-                                    console.log(`[EpubParser-NCX] Skipping metadata chapter by title: ${title}`);
-                                    continue;
-                                }
+                                    let src = String(point.content?.["@_src"] || '');
+                                    const [purePath, anchor] = src.includes('#') ? src.split('#') : [src, null];
 
-                                let src = String(point.content?.["@_src"] || '');
-                                if (src.includes('#')) src = src.split('#')[0];
-
-                                const contentPath = opfDir + src;
-                                const html = await zip.file(contentPath)?.async('text');
-                                if (html) {
-                                    let text = this.stripHtml(html);
-                                    text = this.cleanChapterContent(title, text);
-                                    if (text.length > 20) {
-                                        console.log(`[EpubParser-NCX] Extracted Chapter: ${title} | Length: ${text.length}`);
-                                        epubChapters.push({ title, content: text.slice(0, 100000)});
+                                    const contentPath = opfDir + purePath;
+                                    const html = await zip.file(contentPath)?.async('text');
+                                    if (html) {
+                                        let text = anchor ? this.extractContentByAnchor(html, anchor) : this.stripHtml(html);
+                                        text = this.cleanChapterContent(title, text);
+                                        if (text.length > 20) {
+                                            epubChapters.push({ title, content: text.slice(0, 100000)});
+                                        }
                                     }
-                                }
+                                } catch (e) {}
                             }
                         }
                     }
@@ -208,8 +201,9 @@ class EpubParser {
             }
 
             // Final cleanup of chapter list: remove duplicates and very short entries
+            // Final cleanup: Only deduplicate if BOTH title and content start match
             const uniqueChapters = epubChapters.filter((ch, index, self) =>
-                index === self.findIndex((t) => t.title === ch.title || t.content.slice(0, 100) === ch.content.slice(0, 100))
+                index === self.findIndex((t) => t.title === ch.title && t.content.slice(0, 100) === ch.content.slice(0, 100))
             );
 
             return { title, author, chapters: uniqueChapters };
@@ -268,6 +262,39 @@ class EpubParser {
             text = text.substring(cleanTitle.length).trim();
         }
         return text.replace(/^[:.\-\s]+/, '').trim();
+    }
+
+    /**
+     * Attempts to extract content starting from an anchor ID.
+     * Simple implementation: find the ID, and take everything after it (up to 100k chars).
+     * This is better than taking the whole file every time.
+     */
+    private extractContentByAnchor(html: string, anchor: string): string {
+        // Find various forms of anchor declarations
+        const patterns = [
+            new RegExp(`id=["']${anchor}["']`, 'i'),
+            new RegExp(`name=["']${anchor}["']`, 'i')
+        ];
+
+        let foundIdx = -1;
+        for (const p of patterns) {
+            const match = html.match(p);
+            if (match && match.index !== undefined) {
+                foundIdx = match.index;
+                break;
+            }
+        }
+
+        if (foundIdx === -1) return this.stripHtml(html);
+
+        // Instead of starting exactly at 'id=', find the end of the tag '>'
+        // to avoid leaking things like id='p175' into the text
+        const endOfTagIdx = html.indexOf('>', foundIdx);
+        const startIdx = endOfTagIdx !== -1 ? endOfTagIdx + 1 : foundIdx;
+
+        // Take from the end of that tag onwards
+        const slicedHtml = html.substring(startIdx);
+        return this.stripHtml(slicedHtml);
     }
 }
 

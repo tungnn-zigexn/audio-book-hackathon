@@ -126,6 +126,35 @@ class BookImportService {
             console.error('[BookImportService] Global error:', error);
         }
     }
+
+    async importExternalEpub(fileUri: string) {
+        try {
+            console.log(`[BookImportService] Importing external EPUB: ${fileUri}`);
+            const epubData = await epubParser.parse(fileUri);
+
+            const bookId = await databaseService.insertBook({
+                title: epubData.title,
+                author: epubData.author || 'Chưa rõ tác giả',
+                language: 'vi',
+                description: `Sách tải lên: ${epubData.title}`,
+                last_chapter_index: 0
+            });
+
+            for (let i = 0; i < epubData.chapters.length; i++) {
+                await databaseService.insertChapter({
+                    book_id: bookId,
+                    title: epubData.chapters[i].title,
+                    content: epubData.chapters[i].content,
+                    order_index: i
+                });
+            }
+            console.log(`[BookImportService] Successfully imported: ${epubData.title}`);
+            return bookId;
+        } catch (error) {
+            console.error('[BookImportService] External EPUB import failed:', error);
+            throw error;
+        }
+    }
 }
 
 export const bookImportService = new BookImportService();

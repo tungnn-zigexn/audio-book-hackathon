@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, FlatList, TouchableOpacity, Image, TextInput, Alert } from 'react-native';
 import { Colors, Spacing } from '../constants/theme';
-import { BookOpen, Search, Trash2 } from 'lucide-react-native';
+import { BookOpen, Search, Trash2, Plus } from 'lucide-react-native';
+import * as DocumentPicker from 'expo-document-picker';
+import { ActivityIndicator } from 'react-native';
 import { databaseService, Book } from '../services/DatabaseService';
 import { useBookStore } from '../store/useBookStore';
 import { bookImportService } from '../services/BookImportService';
@@ -11,6 +13,7 @@ export default function LibraryScreen({ onSelectBook }: { onSelectBook: () => vo
     const { setSelectedBook } = useBookStore();
     const [dbBooks, setDbBooks] = useState<Book[]>([]);
     const [searchQuery, setSearchQuery] = useState('');
+    const [isImporting, setIsImporting] = useState(false);
 
     useEffect(() => {
         loadBooks();
@@ -28,6 +31,28 @@ export default function LibraryScreen({ onSelectBook }: { onSelectBook: () => vo
     const handlePress = (book: Book) => {
         setSelectedBook(book);
         onSelectBook();
+    };
+
+    const handleImportFile = async () => {
+        try {
+            const result = await DocumentPicker.getDocumentAsync({
+                type: 'application/epub+zip',
+                copyToCacheDirectory: true
+            });
+
+            if (result.canceled) return;
+
+            setIsImporting(true);
+            const asset = result.assets[0];
+            await bookImportService.importExternalEpub(asset.uri);
+            await loadBooks();
+            Alert.alert("Thành công", `Đã thêm sách "${asset.name}" vào thư viện.`);
+        } catch (err) {
+            console.error('[LibraryScreen] Import Error:', err);
+            Alert.alert("Lỗi", "Không thể bóc tách file ePub này. Vui lòng thử file khác.");
+        } finally {
+            setIsImporting(false);
+        }
     };
 
     const handleReset = () => {
@@ -63,9 +88,18 @@ export default function LibraryScreen({ onSelectBook }: { onSelectBook: () => vo
                     <TouchableOpacity onLongPress={() => databaseService.shareDatabase()}>
                         <Text style={styles.title}>Thư viện</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={handleReset}>
-                        <Trash2 color={Colors.textSecondary} size={24} />
-                    </TouchableOpacity>
+                    <View style={styles.headerButtons}>
+                        {isImporting ? (
+                            <ActivityIndicator color={Colors.primary} size="small" style={{ marginRight: Spacing.md }} />
+                        ) : (
+                            <TouchableOpacity onPress={handleImportFile} style={{ marginRight: Spacing.md }}>
+                                <Plus color={Colors.primary} size={28} />
+                            </TouchableOpacity>
+                        )}
+                        <TouchableOpacity onPress={handleReset}>
+                            <Trash2 color={Colors.textSecondary} size={24} />
+                        </TouchableOpacity>
+                    </View>
                 </View>
             </View>
 
@@ -119,6 +153,10 @@ const styles = StyleSheet.create({
     headerTop: {
         flexDirection: 'row',
         justifyContent: 'space-between',
+        alignItems: 'center',
+    },
+    headerButtons: {
+        flexDirection: 'row',
         alignItems: 'center',
     },
     title: {
