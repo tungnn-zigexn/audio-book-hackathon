@@ -281,16 +281,68 @@ class DatabaseService {
         } catch (e) {}
     }
 
+    async deleteBook(bookId: number) {
+        await this.init();
+        await this.db!.withTransactionAsync(async () => {
+            // 1. Delete all audio cache for this book
+            await this.db!.runAsync(
+                'DELETE FROM audio_cache WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)',
+                bookId
+            );
+            // 2. Delete all chapters
+            await this.db!.runAsync('DELETE FROM chapters WHERE book_id = ?', bookId);
+            // 3. Delete the book record
+            await this.db!.runAsync('DELETE FROM books WHERE id = ?', bookId);
+        });
+        console.log(`[DatabaseService] Book ${bookId} deleted.`);
+    }
+
+    async clearAllData() {
+        await this.init();
+        await this.db!.execAsync('DELETE FROM audio_cache');
+        await this.db!.execAsync('DELETE FROM chapters');
+        await this.db!.execAsync('DELETE FROM books');
+        console.log('[DatabaseService] Database cleared');
+    }
+
+    /**
+     * Create a fast snapshot for cloud sync (no VACUUM)
+     * Using copyAsync is much faster than VACUUM for background sync
+     */
+    async getSyncSnapshot(): Promise<string> {
+        await this.init();
+        const dbPath = FileSystem.documentDirectory + 'SQLite/audiobook_v2.db';
+        const snapshotPath = FileSystem.cacheDirectory + 'sync_snapshot.db';
+
+        try {
+            // Close DB briefly or rely on OS to handle the copy of the file
+            // Since we are in WAL mode, a simple copy is usually safe
+            await FileSystem.copyAsync({
+                from: dbPath,
+                to: snapshotPath
+            });
+            console.log('[DatabaseService] Sync snapshot created at:', snapshotPath);
+            return snapshotPath;
+        } catch (error) {
+            console.error('[DatabaseService] Failed to create sync snapshot:', error);
+            return dbPath; // Fallback to original path
+        }
+    }
+
     /**
      * VACUUM the database to reduce size and prepare for export
      */
     async vacuumAndExport(): Promise<string> {
         await this.init();
         console.log('[DatabaseService] Vacuuming database...');
-        await this.db!.execAsync('VACUUM;');
+        try {
+            await this.db!.execAsync('VACUUM;');
+            console.log('[DatabaseService] Database vacuumed');
+        } catch (e) {
+            console.warn('[DatabaseService] Vacuum failed (likely busy):', e);
+        }
 
         const dbPath = FileSystem.documentDirectory + 'SQLite/audiobook_v2.db';
-        console.log(`[DatabaseService] Database ready for export at: ${dbPath}`);
         return dbPath;
     }
 
